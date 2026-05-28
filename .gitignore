@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+*.png
+.DS_Store
+geo_data.csv
+logic/
+benchmarks/
+*.egg-info/
+.venv/
