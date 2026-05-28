@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "popgrid"
 version = "0.1.0"
-description = "Population grid maps: visualise any country as an equal-area pixel grid"
+description = "Tiled grid maps for Python — land area and population cartograms"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -38,8 +38,8 @@ dev = ["pytest>=7", "ruff", "black", "ipykernel"]
 
 [project.urls]
 Homepage = "https://databites.tech"
-Repository = "https://github.com/rfeers/popgrid"
-Issues = "https://github.com/rfeers/popgrid/issues"
+Repository = "https://github.com/databites-tech/popgrid"
+Issues = "https://github.com/databites-tech/popgrid/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
