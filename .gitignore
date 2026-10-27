@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 *.png
+!docs/img/*.png
 .DS_Store
 geo_data.csv
 logic/
