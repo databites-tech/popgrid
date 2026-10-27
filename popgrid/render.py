@@ -116,8 +116,24 @@ def _luminance(hex_color: str) -> float:
     r, g, b = mcolors.to_rgb(hex_color)
     return 0.299 * r + 0.587 * g + 0.114 * b
 
+def _rel_luminance(hex_color: str) -> float:
+    """WCAG relative luminance (linearised sRGB), 0 = black, 1 = white."""
+    def lin(c: float) -> float:
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = mcolors.to_rgb(hex_color)
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def _contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio between two colours (1 to 21)."""
+    la, lb = _rel_luminance(a), _rel_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
 def _text_color(bg: str) -> str:
-    return "#ffffff" if _luminance(bg) < 0.48 else "#111111"
+    """Black or white, whichever contrasts more with ``bg`` (WCAG ratio)."""
+    return "#ffffff" if _contrast(bg, "#ffffff") >= _contrast(bg, "#111111") else "#111111"
 
 def build_color_map(
     region_names: list[str],
@@ -335,6 +351,7 @@ def _plot_cells(
     label_mode: str = "auto",
     labels: Optional[dict[str, str]] = None,
     cell_pts: float = 0.0,
+    display_names: Optional[dict[str, str]] = None,
 ) -> None:
     """
     Draw colored cells and optional region borders.
@@ -453,6 +470,7 @@ def _plot_cells(
             ax, cells_gdf, color_map, cell_size,
             label_min_cells=label_min_cells, style=st,
             label_mode=label_mode, labels=labels, cell_pts=cell_pts,
+            display_names=display_names,
         )
 
 
@@ -702,11 +720,19 @@ def _label_regions(
     label_mode: str = "auto",
     labels: Optional[dict[str, str]] = None,
     cell_pts: float = 0.0,
+    display_names: Optional[dict[str, str]] = None,
 ) -> None:
-    """Write one label per region with at least ``label_min_cells`` cells."""
+    """
+    Write one label per region with at least ``label_min_cells`` cells.
+
+    ``display_names`` renames a region for labelling purposes only (the
+    fitter still wraps or abbreviates the new name as space allows);
+    ``labels`` is a hard override drawn as given.
+    """
     if label_mode not in LABEL_MODES:
         raise ValueError(f"label_mode must be one of {LABEL_MODES}; got {label_mode!r}")
     labels = labels or {}
+    display_names = display_names or {}
     for region_name, grp in cells_gdf.groupby("region_name"):
         if len(grp) < label_min_cells:
             continue
@@ -715,17 +741,20 @@ def _label_regions(
             continue
         x, y, cols, rows = _largest_component(grp, cell_size)
         text, fontsize = _choose_label(
-            name, cols, rows, cell_pts, style, label_mode, labels.get(name)
+            display_names.get(name, name), cols, rows, cell_pts, style, label_mode,
+            labels.get(name),
         )
         bg = color_map.get(region_name, "#cccccc")  # type: ignore[arg-type]
         fg = style["label_color"] or _text_color(bg)
-        outline = "#00000066" if _luminance(fg) > 0.5 else "#ffffff99"
+        # Halo in the opposite tone, opaque enough to carry the label on any
+        # block colour: white text gets a dark halo, dark text a light one.
+        outline = "#000000b3" if _rel_luminance(fg) > 0.5 else "#ffffffd9"
         ax.text(
             x, y, text,
             fontsize=fontsize, ha="center", va="center",
             fontweight=style["label_weight"], fontfamily=style["label_font"],
             color=fg, zorder=4, linespacing=1.05,
-            path_effects=[withStroke(linewidth=max(1.5, fontsize * 0.16),
+            path_effects=[withStroke(linewidth=max(2.0, fontsize * 0.22),
                                      foreground=outline)],
         )
 
@@ -747,6 +776,7 @@ def _label_small_inline(
     label_min_cells: int,
     style: Optional[dict] = None,
     labels: Optional[dict[str, str]] = None,
+    display_names: Optional[dict[str, str]] = None,
 ) -> None:
     """
     Add name annotations for inline regions that are too small to be
@@ -757,11 +787,15 @@ def _label_small_inline(
     """
     st = resolve_style(style)
     labels = labels or {}
-    fontsize = max(6.5, float(st["label_size"] or 0) * 0.75, float(st["label_min_size"]) * 0.9)
+    display_names = display_names or {}
+    # Leader-line labels sit on the background, not on a block, so they can be
+    # as large as the smallest in-block label without crowding anything.
+    fontsize = max(10.0, float(st["label_size"] or 0) * 0.9, float(st["label_min_size"]) * 1.5)
     for region_name, grp in cells_gdf.groupby("region_name"):
         if len(grp) >= label_min_cells:
             continue  # already handled by _plot_cells
-        text = labels.get(str(region_name), str(region_name))
+        name = str(region_name)
+        text = labels.get(name, display_names.get(name, name))
         if not text:
             continue
         cx = float(grp["cx"].mean())
@@ -774,9 +808,11 @@ def _label_small_inline(
             ha="left",
             va="bottom",
             fontstyle="italic",
+            fontweight="bold",
             fontfamily=st["label_font"],
             color=st["label_color"] or "#1A3829",
             zorder=5,
+            path_effects=[withStroke(linewidth=2.5, foreground="#ffffffd9")],
             arrowprops=dict(
                 arrowstyle="-",
                 color="#888888",
@@ -792,6 +828,7 @@ def _classify_secondary(
     secondary_lms: list[dict],
     cell_size: float,
     inline_margin_cells: int = INLINE_MARGIN_CELLS,
+    panel_regions: Optional[set[str]] = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     Split secondary landmasses into ``inline`` and ``panel`` groups.
@@ -801,10 +838,14 @@ def _classify_secondary(
         the main map bbox.  Plotted at correct geographic position on main axes.
 
     panel
-        Everything else — rendered as a bordered subplot panel.
+        Everything else — rendered as a bordered subplot panel. Landmasses
+        whose regions appear in ``panel_regions`` always go here, whatever
+        the geometry says (Alaska's panhandle is near Washington, but Alaska
+        belongs in a panel).
 
     Non-distinct micro-islands are silently filtered.
     """
+    panel_regions = set(panel_regions or ())
     main_cells = main_lm["cells"]
     main_x0 = main_cells["cx"].min()
     main_x1 = main_cells["cx"].max()
@@ -828,6 +869,11 @@ def _classify_secondary(
             logger.debug("Landmass %d filtered (non-distinct: %s)", lm["id"], lm_names)
             continue
 
+        if lm_names & panel_regions:
+            panel.append(lm)
+            logger.debug("Landmass %d (%s) → panel (forced)", lm["id"], lm_names)
+            continue
+
         lm_x0, lm_x1 = cells["cx"].min(), cells["cx"].max()
         lm_y0, lm_y1 = cells["cy"].min(), cells["cy"].max()
 
@@ -847,8 +893,10 @@ def _classify_secondary(
 
 # ── Panel helpers ─────────────────────────────────────────────────────────────
 
-def _panel_label(lm: dict) -> str:
-    names = lm["cells"]["region_name"].dropna().unique().tolist()
+def _panel_label(lm: dict, display_names: Optional[dict[str, str]] = None) -> str:
+    display_names = display_names or {}
+    names = [display_names.get(str(n), str(n))
+             for n in lm["cells"]["region_name"].dropna().unique().tolist()]
     return names[0] if len(names) == 1 else ", ".join(sorted(names))
 
 
@@ -953,6 +1001,8 @@ def draw_map(
     label_mode: str = "auto",
     labels: Optional[dict[str, str]] = None,
     set_limits: bool = True,
+    panel_regions: Optional[set[str]] = None,
+    display_names: Optional[dict[str, str]] = None,
 ) -> plt.Axes:
     """
     Draw the block map into a caller-supplied Matplotlib Axes.
@@ -996,7 +1046,9 @@ def draw_map(
 
     main = landmasses[0]
     secondary_raw = [lm for lm in landmasses[1:] if not lm["cells"].empty]
-    inline_lms, _panel_lms = _classify_secondary(main, secondary_raw, cell_size)
+    inline_lms, _panel_lms = _classify_secondary(
+        main, secondary_raw, cell_size, panel_regions=panel_regions
+    )
     if scope == "mainland":
         inline_lms = []
 
@@ -1028,6 +1080,7 @@ def draw_map(
         background_style=background_style,
         show_region_borders=show_region_borders, border_lw=border_lw,
         style=st, label_mode=label_mode, labels=labels, cell_pts=cell_pts,
+        display_names=display_names,
     )
     _plot_cells(ax, main_cells, color_map, cell_size,
                 label_min_cells=label_min_cells, **common)
@@ -1040,7 +1093,7 @@ def draw_map(
         if show_labels and label_mode != "none":
             _label_small_inline(
                 ax, lm["cells"], color_map, cell_size, inline_min,
-                style=st, labels=labels,
+                style=st, labels=labels, display_names=display_names,
             )
 
     if set_limits:
@@ -1068,6 +1121,8 @@ def create_figure(
     style: Optional[dict] = None,
     label_mode: str = "auto",
     labels: Optional[dict[str, str]] = None,
+    panel_regions: Optional[set[str]] = None,
+    display_names: Optional[dict[str, str]] = None,
 ) -> plt.Figure:
     """
     Build the complete matplotlib Figure.
@@ -1094,7 +1149,9 @@ def create_figure(
     main = landmasses[0]
     secondary_raw = [lm for lm in landmasses[1:] if not lm["cells"].empty]
 
-    inline_lms, panel_lms = _classify_secondary(main, secondary_raw, cell_size)
+    inline_lms, panel_lms = _classify_secondary(
+        main, secondary_raw, cell_size, panel_regions=panel_regions
+    )
     panel_lms = _group_panels_by_region(panel_lms)
 
     # Apply scope filter
@@ -1148,8 +1205,8 @@ def create_figure(
         ))
 
     # ── Figure height ─────────────────────────────────────────────────────────
-    title_h_in = (0.65 if title else 0.0) + (0.45 if subtitle else 0.0)
-    sep_h_in = 0.55 if panel_lms else 0.0
+    title_h_in = (0.65 if title else 0.0) + (0.55 if subtitle else 0.0)
+    sep_h_in = 0.85 if panel_lms else 0.0
     # Footer: always present — white space that hosts source attribution,
     # clear of any panel insets regardless of figure height.
     footer_h_in = 0.35
@@ -1191,12 +1248,12 @@ def create_figure(
             color="#1A3829",
             transform=title_ax.transAxes,
         )
-        y -= 0.52
+        y -= 0.50
     if subtitle:
         title_ax.text(
             0.5, y, subtitle,
             ha="center", va="top",
-            fontsize=13,
+            fontsize=17,
             color="#5E7D6A",
             fontstyle="italic",
             transform=title_ax.transAxes,
@@ -1211,6 +1268,7 @@ def create_figure(
         background_style=background_style, background_color=background_color,
         show_region_borders=show_region_borders,
         style=st, label_mode=label_mode, labels=labels,
+        panel_regions=panel_regions, display_names=display_names,
     )
 
     # ── Panel row ─────────────────────────────────────────────────────────────
@@ -1312,11 +1370,11 @@ def create_figure(
 
         # Line 1: section heading — centered, italic
         sep_ax.text(
-            0.5, 0.62,
-            "Geographically Detached Territories",
+            0.5, 0.70,
+            "Detached territories",
             transform=sep_ax.transAxes,
             ha="center", va="center",
-            fontsize=12, color="#5E7D6A",
+            fontsize=14, color="#5E7D6A",
             fontstyle="italic",
         )
 
@@ -1329,11 +1387,11 @@ def create_figure(
             x_fig_center = (panel_pos.x0 + panel_pos.x1) / 2
             x_sep = (x_fig_center - sep_pos.x0) / (sep_pos.x1 - sep_pos.x0)
             sep_ax.text(
-                x_sep, 0.12,
-                _panel_label(lm),
+                x_sep, 0.26,
+                _panel_label(lm, display_names),
                 transform=sep_ax.transAxes,
                 ha="center", va="center",
-                fontsize=10, fontweight="bold",
+                fontsize=13, fontweight="bold",
                 color="#1A3829",
             )
 
@@ -1358,7 +1416,7 @@ def create_figure(
             f"Source: {_source_text}",
             transform=footer_ax.transAxes,
             ha="left", va="center",
-            fontsize=9,
+            fontsize=10,
             color="#5E7D6A",
             fontstyle="italic",
         )

@@ -63,11 +63,31 @@ def project_regions(regions_wgs84: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, 
     lat_0 = float(((bounds["miny"] + bounds["maxy"]) / 2).median())
     crs = laea_crs(lon_0, lat_0)
     projected = regions_wgs84.to_crs(crs)
+    # Projection can turn a valid lon/lat polygon into an invalid one (a ring
+    # that crosses the antimeridian folds onto itself: Chukotka, Fiji). Some
+    # GEOS versions then throw TopologyException from plain predicates such as
+    # intersects, so repair here, once, before anything downstream touches it.
+    invalid = ~projected.geometry.is_valid
+    if invalid.any():
+        logger.debug("Repairing %d geometry(ies) made invalid by projection", int(invalid.sum()))
+        fixed = projected.geometry.copy()
+        fixed[invalid] = projected.geometry[invalid].make_valid()
+        projected = projected.set_geometry(fixed)
     logger.debug("Projected to LAEA centred at (%.3f, %.3f) [median centroid]", lon_0, lat_0)
     return projected, crs
 
 
 # ── Landmass detection ────────────────────────────────────────────────────────
+
+
+def _intersects_safe(a, b) -> bool:
+    """``a.intersects(b)`` that repairs the operands if GEOS rejects them."""
+    import shapely
+
+    try:
+        return bool(a.intersects(b))
+    except Exception:  # noqa: BLE001  (GEOSException: TopologyException)
+        return bool(shapely.make_valid(a).intersects(shapely.make_valid(b)))
 
 
 def _explode_to_polygons(geom) -> list[Polygon]:
@@ -201,7 +221,7 @@ def detect_landmasses(
             if (
                 regions_proj.geometry.iloc[iloc] is not None
                 and not regions_proj.geometry.iloc[iloc].is_empty
-                and cluster_geom.intersects(regions_proj.geometry.iloc[iloc])
+                and _intersects_safe(cluster_geom, regions_proj.geometry.iloc[iloc])
             )
         ]
 

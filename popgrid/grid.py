@@ -167,7 +167,7 @@ def generate_cells(
     # No centres landed inside — landmass is small but bounding box > cell_size
     # (thin/irregular shape).  Fall back to centroid cell.
     if not inside.any():
-        logger.warning(
+        logger.info(
             "Landmass %d: no cell centres fell inside landmass geometry "
             "(thin or irregular shape) — forcing 1 centroid cell.",
             landmass_id,

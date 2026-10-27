@@ -127,7 +127,7 @@ PopGrid("DEU", color_map={"Bayern": "#1A3829"}).plot(
 )
 ```
 
-`color_map` pins regions to colours; the rest keep their automatic, adjacency-aware palette colour. `label_mode` is `auto` (fit the full name, else wrap it on two lines, else abbreviate), `full`, `short` or `none`. `labels` overrides individual names; an empty string hides one.
+`color_map` pins regions to colours; the rest keep their automatic, adjacency-aware palette colour. `exclude=[...]` drops regions before the grid is built (they take no blocks); countries come with a short default list of uninhabited specks, and `--exclude` adds to it on the CLI. `label_mode` is `auto` (fit the full name, else wrap it on two lines, else abbreviate), `full`, `short` or `none`. `labels` overrides individual names; an empty string hides one.
 
 ---
 
@@ -148,8 +148,11 @@ python generate.py ESP --mode compare
 # Several countries at once, into a folder
 python generate.py ESP DEU FRA --mode compare --out compare/
 
-# Everything bundled
+# The 24 countries with curated census data
 python generate.py ALL --mode pop
+
+# Every supported country
+python generate.py WORLD --mode compare --out world/
 ```
 
 Useful flags: `--n` (target block count, default 1000), `--mainland` (drop detached territories), `--no-panels` (keep nearby islands inline, drop distant panels), `--palette`, `--dissolve`, `--label-mode auto|full|short|none`, `--label-size`, `--edge-color`, `--edge-width`, `--grid-color`, `--bg`, `--background grid|solid|none`, `--title`, `--subtitle`, `--source`, `--dpi`, `--out`. Run `python generate.py --help` for the full list.
@@ -205,13 +208,17 @@ The published attributes include `iso3`, `mode`, `block_id`, `region`, `color_he
 
 ---
 
-## Bundled countries
+## Countries
 
-24 countries ship with population data and recommended regional segmentation:
+Any country works: `PopGrid("CHL")`, `PopGrid("IND")`, `PopGrid("NGA")`. Boundaries come from Natural Earth admin-1 and population from one of two bundled tables:
 
-`ARG` `AUS` `BEL` `BRA` `CAN` `CHE` `CHN` `DEU` `ESP` `FRA` `GBR` `ITA` `JPN` `KOR` `MEX` `NLD` `NOR` `PHL` `POL` `PRT` `SWE` `TUR` `USA` `ZAF`
+- **Curated census figures** for 24 countries, at the level the map shows (autonomous communities for Spain, Länder for Germany, and so on):
+  `ARG` `AUS` `BEL` `BRA` `CAN` `CHE` `CHN` `DEU` `ESP` `FRA` `GBR` `ITA` `JPN` `KOR` `MEX` `NLD` `NOR` `PHL` `POL` `PRT` `SWE` `TUR` `USA` `ZAF`
+- **GHS-POP 2025 estimates** for everything else: the JRC's 1 km gridded population summed over every Natural Earth admin-1 polygon on Earth. Modelled, not census; within a few percent of official regional figures, and always consistent with the polygon being drawn.
 
-For any other country, or for sub-national data such as cities, use `from_geodataframe` with your own polygons.
+`popgrid.supported_countries()` lists the 207 countries with enough regions to make a map; `popgrid.bundled_countries()` the 24 curated ones. `python generate.py WORLD --mode compare` renders all of them.
+
+For sub-national data such as cities, or to use your own population numbers, use `from_geodataframe` with your own polygons.
 
 ---
 
@@ -219,15 +226,15 @@ For any other country, or for sub-national data such as cities, use `from_geodat
 
 1. Load admin-1 regions, project to an equal-area CRS, and choose a cell size so the country tiles into roughly `n` blocks (default 1000, so one block ≈ 0.1%).
 2. Allocate an integer block quota per region using the Hamilton (largest-remainder) method, weighted by area or population.
-3. For population maps, deform each landmass with a contiguous-area cartogram so a region's area tracks its population, then rasterise the deformed shapes onto the grid. Dense regions bulge, sparse regions pinch, relative position and silhouette are preserved.
+3. For population maps, deform each landmass with a contiguous-area cartogram so a region's area tracks its population, then rasterise the deformed shapes onto the grid. Dense regions bulge, sparse regions pinch, relative position and silhouette are preserved. Two engines: a rubber-sheet cartogram (Dougenik et al.) by default, and a diffusion cartogram (Gastner-Newman) that `engine="auto"` switches to when the sheet would tear, which happens for countries with an empty interior such as China or Canada. Pass `engine="diffusion"` to use it everywhere.
 4. Fit each region to its exact quota and assign stable colours from the geographic adjacency graph, so the same region keeps the same colour across the area and population maps.
 
 ---
 
 ## Notes and limitations
 
-- **China** leaves a small interior void in the population map. The extreme density gradient between the eastern seaboard and the western interior is hard to tile without a gap; it is documented rather than hidden.
 - **Population currency.** Bundled population figures are a fixed snapshot, not live data. For up-to-date or custom numbers, pass your own values through `PopGrid.from_geodataframe(..., weight_col=...)`.
+- **Disputed borders.** Natural Earth draws them its own way (Kashmir, Crimea, Western Sahara). Check before publishing a map of a contested region.
 - Block counts land close to `n` but not always exactly, because of quota rounding and edge fitting (e.g. 984 or 1018 rather than 1000).
 
 ---
@@ -235,7 +242,8 @@ For any other country, or for sub-national data such as cities, use `from_geodat
 ## Data sources
 
 - Country and admin-1 boundaries: [Natural Earth](https://www.naturalearthdata.com/) (`ne_10m_admin_1_states_provinces`), public domain.
-- Bundled population figures: World Bank and national statistical offices.
+- Curated population figures: national statistical offices (see the `source` column of `population.csv`).
+- Fallback population figures: [GHS-POP R2023A](https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php), epoch 2025, European Commission JRC, summed over Natural Earth admin-1 polygons.
 - Barcelona example: district boundaries from [Ajuntament de Barcelona](https://opendata-ajuntament.barcelona.cat/) open data; population from the 2023 municipal register.
 
 ---

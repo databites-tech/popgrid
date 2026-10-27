@@ -15,7 +15,13 @@ Quick start
 """
 
 from .core import AreaGrid, PopGrid
-from .data import KNOWN_DISSOLVE, RECOMMENDED_SETTINGS, REGION_LABELS
+from .data import (
+    KNOWN_DISSOLVE,
+    RECOMMENDED_SETTINGS,
+    REGION_LABELS,
+    bundled_countries,
+    supported_countries,
+)
 from .exceptions import (
     CountryNotFoundError,
     DataNotFoundError,
@@ -23,7 +29,7 @@ from .exceptions import (
     PopGridError,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __author__ = "Josep Ferrer"
 __email__ = "rfeers@gmail.com"
 
@@ -33,6 +39,8 @@ __all__ = [
     "KNOWN_DISSOLVE",
     "RECOMMENDED_SETTINGS",
     "REGION_LABELS",
+    "bundled_countries",
+    "supported_countries",
     "PopGridError",
     "DataNotFoundError",
     "CountryNotFoundError",

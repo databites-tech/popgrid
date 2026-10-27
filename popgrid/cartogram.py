@@ -127,6 +127,7 @@ def dougenik_cartogram(
     value_key: str = "region_name",
     iterations: int = 20,
     max_step_fraction: float = 0.35,
+    diagnostics: dict | None = None,
 ) -> gpd.GeoDataFrame:
     """
     Deform region polygons so area becomes proportional to ``values``.
@@ -147,6 +148,10 @@ def dougenik_cartogram(
         Per-iteration displacement is clamped to this fraction of the mean
         region radius to prevent self-intersection during large inflations
         (e.g. Madrid ~9×).  Lower = more stable but slower convergence.
+    diagnostics:
+        Optional dict filled with ``converged`` (False when the divergence
+        guard stopped the loop early), ``iterations`` actually run and the
+        final ``mean_error`` / ``max_error`` area ratios.
 
     Returns
     -------
@@ -174,6 +179,9 @@ def dougenik_cartogram(
         _start_verts = 0
     _vert_budget = max(2000, _start_verts * 4)
     _prev_geoms = list(out.geometry)
+    converged = True
+    err = np.ones(len(out))
+    it = -1
 
     for it in range(iterations):
         cx, cy, radius, mass, frf = _region_stats(out, val)
@@ -204,6 +212,7 @@ def dougenik_cartogram(
                 it + 1, iterations, nverts, _vert_budget,
             )
             out["geometry"] = gpd.GeoSeries(_prev_geoms, crs=out.crs)
+            converged = False
             break
         _prev_geoms = list(out.geometry)
 
@@ -216,6 +225,11 @@ def dougenik_cartogram(
             it + 1, iterations, float(err.mean()), float(err.max()),
         )
 
+    if diagnostics is not None:
+        diagnostics.update(
+            converged=converged, iterations=it + 1,
+            mean_error=float(err.mean()), max_error=float(err.max()),
+        )
     return out
 
 
@@ -745,3 +759,209 @@ def fill_gaps(
     if not out_frames:
         return cells.iloc[:0].copy()
     return gpd.GeoDataFrame(pd.concat(out_frames, ignore_index=True), crs=cells.crs)
+
+
+# ── Diffusion cartogram (Gastner & Newman, 2004) ─────────────────────────────
+#
+# Why a second engine
+# -------------------
+# The rubber-sheet method above moves vertices with pairwise radial forces and
+# has to be damped hard to stay stable. When one region must shrink twenty-fold
+# while its neighbour grows (Tibet next to Sichuan, Nunavut next to Ontario),
+# the sheet folds before the areas converge, the divergence guard stops the
+# loop, and the map tears.
+#
+# The diffusion method instead treats population density as a fluid that
+# diffuses until it is uniform everywhere, and carries the map along with the
+# flow. Because the flow field is the gradient of a smooth scalar, the mapping
+# is continuous and topology-preserving by construction: regions can shrink or
+# grow by any factor and never cross each other. The price is a raster: the
+# density lives on a grid, and the method's accuracy is bounded by its
+# resolution, which is why block counts are still fixed downstream by
+# ``fit_quota``.
+#
+# Implementation notes
+# --------------------
+# * Density is rasterised on an L × L grid over a padded bounding box. Sea
+#   cells get the country's mean density (the Gastner–Newman convention), so
+#   the outline deforms but the total area is conserved.
+# * The diffusion equation is solved exactly in Fourier space on the mirrored
+#   2L × 2L domain, which gives zero-flux (Neumann) boundaries with plain
+#   ``numpy.fft`` and no extra dependency: rho_hat(k, t) = rho_hat(k, 0) ·
+#   exp(-|k|² t).
+# * Velocity is v = -∇rho / rho. Vertices are integrated with an adaptive
+#   midpoint scheme: a step is accepted when the midpoint and Euler results
+#   agree to ``tol`` grid cells, otherwise halved.
+# * Polygon edges are densified to about one vertex per grid cell before
+#   integration so long straight borders bend with the flow.
+
+
+def _rasterise_density(
+    gdf: gpd.GeoDataFrame,
+    val: np.ndarray,
+    resolution: int,
+    pad: float,
+) -> tuple[np.ndarray, float, float, float]:
+    """
+    Density grid for the diffusion engine.
+
+    Returns ``(rho, x0, y0, cell)``: the L × L density array (row = y, column
+    = x, origin bottom-left) and the affine mapping from grid to data
+    coordinates ``x = x0 + (i + 0.5) * cell``.
+    """
+    minx, miny, maxx, maxy = gdf.total_bounds
+    w, h = maxx - minx, maxy - miny
+    side = max(w, h) * (1.0 + 2.0 * pad)
+    cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+    x0, y0 = cx - side / 2.0, cy - side / 2.0
+    cell = side / resolution
+
+    centres = (np.arange(resolution) + 0.5) * cell
+    gx, gy = np.meshgrid(x0 + centres, y0 + centres)   # shape (L, L), row = y
+    flat_x, flat_y = gx.ravel(), gy.ravel()
+
+    owner = np.full(flat_x.shape, -1, dtype=np.int64)
+    for j, geom in enumerate(gdf.geometry):
+        if geom is None or geom.is_empty:
+            continue
+        inside = shapely.contains_xy(geom, flat_x, flat_y)
+        owner[inside & (owner < 0)] = j
+
+    counts = np.bincount(owner[owner >= 0], minlength=len(gdf)).astype(float)
+    land = counts.sum()
+    mean_density = val.sum() / max(land, 1.0)
+    region_density = np.where(counts > 0, val / np.maximum(counts, 1.0), mean_density)
+
+    rho = np.full(flat_x.shape, mean_density, dtype=float)
+    mask = owner >= 0
+    rho[mask] = region_density[owner[mask]]
+    return rho.reshape(resolution, resolution), x0, y0, cell
+
+
+def _bilinear(field: np.ndarray, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+    """Sample ``field[row=y, col=x]`` at continuous grid positions (cell units)."""
+    L = field.shape[0]
+    fx = np.clip(px - 0.5, 0.0, L - 1.0001)
+    fy = np.clip(py - 0.5, 0.0, L - 1.0001)
+    ix = fx.astype(int)
+    iy = fy.astype(int)
+    tx = fx - ix
+    ty = fy - iy
+    ix1 = np.minimum(ix + 1, L - 1)
+    iy1 = np.minimum(iy + 1, L - 1)
+    return (
+        field[iy, ix] * (1 - tx) * (1 - ty)
+        + field[iy, ix1] * tx * (1 - ty)
+        + field[iy1, ix] * (1 - tx) * ty
+        + field[iy1, ix1] * tx * ty
+    )
+
+
+def diffusion_cartogram(
+    gdf: gpd.GeoDataFrame,
+    values: dict[str, float] | np.ndarray,
+    value_key: str = "region_name",
+    resolution: int = 384,
+    pad: float = 0.35,
+    tol: float = 0.05,
+    max_steps: int = 2000,
+) -> gpd.GeoDataFrame:
+    """
+    Deform region polygons with a Gastner–Newman diffusion cartogram.
+
+    Continuous and topology-preserving for any ratio of target values, at the
+    cost of a raster whose ``resolution`` bounds the accuracy of the areas.
+    Exact block counts are fixed downstream by :func:`fit_quota`, so a few
+    percent of area error here is harmless.
+
+    Parameters
+    ----------
+    gdf:
+        Projected (equal-area, metres) GeoDataFrame with polygon geometries.
+    values:
+        ``{region_name: value}`` or an array aligned with ``gdf`` rows.
+    resolution:
+        Density grid size per side. 256 is fast, 384 (default) is a good
+        balance, 512 for very detailed outlines.
+    pad:
+        Sea margin around the country as a fraction of its larger dimension.
+        The outline needs room to expand into.
+    tol:
+        Integration tolerance in grid cells per step.
+    """
+    out = gdf.copy().reset_index(drop=True)
+    if isinstance(values, dict):
+        val = np.array(
+            [max(float(values.get(str(name), 0.0)), 0.0) for name in out[value_key]],
+            dtype=float,
+        )
+    else:
+        val = np.asarray(values, dtype=float)
+    val = np.maximum(val, 1e-9)
+
+    L = int(resolution)
+    rho0, x0, y0, cell = _rasterise_density(out, val, L, pad)
+
+    # Densify edges so straight borders can bend with the flow.
+    geoms = [shapely.segmentize(g, cell * 1.5) for g in out.geometry]
+    coords = shapely.get_coordinates(np.array(geoms, dtype=object))
+    px = (coords[:, 0] - x0) / cell          # continuous grid coordinates
+    py = (coords[:, 1] - y0) / cell
+
+    # Exact diffusion in Fourier space on the mirrored (Neumann) domain.
+    mirrored = np.block([
+        [rho0, rho0[:, ::-1]],
+        [rho0[::-1, :], rho0[::-1, ::-1]],
+    ])
+    rho_hat = np.fft.rfft2(mirrored)
+    ky = 2.0 * np.pi * np.fft.fftfreq(2 * L)[:, None]
+    kx = 2.0 * np.pi * np.fft.rfftfreq(2 * L)[None, :]
+    k2 = kx ** 2 + ky ** 2
+    rho_mean = float(rho0.mean())
+
+    def velocity(t: float) -> tuple[np.ndarray, np.ndarray, float]:
+        rho = np.fft.irfft2(rho_hat * np.exp(-k2 * t), s=(2 * L, 2 * L))
+        gy_, gx_ = np.gradient(rho)                  # d/drow, d/dcol
+        rho_c = rho[:L, :L]
+        vx = -gx_[:L, :L] / rho_c
+        vy = -gy_[:L, :L] / rho_c
+        spread = float((rho_c.max() - rho_c.min()) / rho_mean)
+        return vx, vy, spread
+
+    t = 0.0
+    dt = 1e-3
+    x = px.copy()
+    y = py.copy()
+    steps = 0
+    while steps < max_steps:
+        vx, vy, spread = velocity(t)
+        if spread < 1e-4:
+            break
+        v1x = _bilinear(vx, x, y)
+        v1y = _bilinear(vy, x, y)
+        # Midpoint step with the Euler step as the error estimate.
+        while True:
+            mx = x + 0.5 * dt * v1x
+            my = y + 0.5 * dt * v1y
+            vmx, vmy, _ = velocity(t + 0.5 * dt)
+            v2x = _bilinear(vmx, mx, my)
+            v2y = _bilinear(vmy, mx, my)
+            nx = x + dt * v2x
+            ny = y + dt * v2y
+            err = float(np.max(np.hypot(nx - (x + dt * v1x), ny - (y + dt * v1y))))
+            if err <= tol or dt < 1e-6:
+                break
+            dt *= 0.5
+        x, y = nx, ny
+        t += dt
+        steps += 1
+        dt = min(dt * 1.3, 0.25 * L * L)
+        if err < 0.2 * tol:
+            dt *= 1.3
+    logger.debug("diffusion cartogram: %d steps, t=%.1f, spread=%.2e", steps, t, spread)
+
+    new_coords = np.column_stack([x0 + x * cell, y0 + y * cell])
+    moved = shapely.set_coordinates(np.array(geoms, dtype=object), new_coords)
+    moved = [shapely.make_valid(g) for g in moved]
+    out["geometry"] = gpd.GeoSeries(moved, crs=out.crs)
+    return out

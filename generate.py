@@ -10,7 +10,8 @@ Usage
 -----
     python generate.py                       # default set, population maps
     python generate.py ESP DEU JPN           # specific countries
-    python generate.py ALL                   # every country in the bundled data
+    python generate.py ALL                   # the 24 countries with curated census data
+    python generate.py WORLD                 # every country (GHS-POP estimates elsewhere)
     python generate.py ESP --mode area       # land-area map
     python generate.py ESP --mode compare    # area + population side by side
     python generate.py ESP DEU --mode area   # land-area maps, batch
@@ -34,7 +35,7 @@ import sys
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
 from popgrid import AreaGrid, PopGrid               # noqa: E402
-from popgrid.data import RECOMMENDED_SETTINGS        # noqa: E402
+from popgrid.data import bundled_countries, supported_countries  # noqa: E402
 
 # Default batch: the reference set plus a couple of stress tests.
 DEFAULT_SET = ["ESP", "DEU", "ITA", "FRA", "GBR"]
@@ -69,7 +70,9 @@ def resolve_codes(countries: list[str]) -> list[str]:
     if not countries:
         return DEFAULT_SET
     if len(countries) == 1 and countries[0].upper() == "ALL":
-        return sorted(RECOMMENDED_SETTINGS.keys())
+        return bundled_countries()
+    if len(countries) == 1 and countries[0].upper() == "WORLD":
+        return supported_countries()
     return [c.upper() for c in countries]
 
 
@@ -101,6 +104,7 @@ def _build(GridClass, iso, args):
     grid = GridClass(
         iso, n=args.n, cluster_distance_km=args.cluster,
         palette=resolve_palette(args.palette), dissolve_by=resolve_dissolve(args.dissolve),
+        engine=args.engine, exclude=args.exclude,
     )
     grid.build()
     return grid
@@ -110,6 +114,7 @@ def _build_from_gdf(GridClass, gdf, args):
     kwargs = dict(
         gdf=gdf, region_col=args.region_col, n=args.n,
         cluster_distance_km=args.cluster, palette=resolve_palette(args.palette),
+        engine=args.engine, exclude=args.exclude,
     )
     if GridClass is PopGrid:
         kwargs["weight_col"] = args.weight_col
@@ -308,14 +313,14 @@ def compare_figure(iso, args):
     fig.text(lx, 0.885,
              f"Every block = {pct}% of the national land area  "
              f"({ag.total_cells:,} blocks total)",
-             ha="center", va="center", fontsize=15, fontstyle="italic", color=muted)
+             ha="center", va="center", fontsize=19, fontstyle="italic", color=muted)
     fig.text(rx, 0.885,
              f"Every block = {pct}% of the national population  "
              f"({pg.total_cells:,} blocks total)",
-             ha="center", va="center", fontsize=15, fontstyle="italic", color=muted)
+             ha="center", va="center", fontsize=19, fontstyle="italic", color=muted)
     src = args.source or "Source: Natural Earth (ne_10m_admin_1_states_provinces) · popgrid"
     fig.text(0.5, 0.02, src, ha="center", va="center",
-             fontsize=11, fontstyle="italic", color="#8A9A91")
+             fontsize=12, fontstyle="italic", color="#8A9A91")
     return fig, ag, pg
 
 
@@ -326,7 +331,8 @@ def main() -> int:
         description="Generate popgrid population or land-area maps.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("countries", nargs="*", help="ISO3 codes, or ALL.")
+    p.add_argument("countries", nargs="*",
+                   help="ISO3 codes, ALL (curated census countries) or WORLD (every country).")
     p.add_argument("--mode", default="pop", choices=["pop", "area", "compare"],
                    help="pop (population, default) | area (land area) | "
                         "compare (area + population side by side).")
@@ -374,6 +380,12 @@ def main() -> int:
                    help="Background colour (default: #FAF6F0).")
     p.add_argument("--background", default="grid", choices=["grid", "solid", "none"],
                    help="Background style (default: grid).")
+    p.add_argument("--exclude", nargs="+", default=None, metavar="REGION",
+                   help="Region names to drop before building (they take no blocks). "
+                        "Adds to the country's built-in exclusions.")
+    p.add_argument("--engine", default="auto", choices=["auto", "dougenik", "diffusion"],
+                   help="Cartogram engine for population maps: auto (rubber-sheet, "
+                        "diffusion when it tears), dougenik, or diffusion (Gastner-Newman).")
     p.add_argument("--edge-color", default=None, metavar="HEX",
                    help="Region outline colour (default: black).")
     p.add_argument("--edge-width", type=float, default=None, metavar="PT",
@@ -480,7 +492,8 @@ def main() -> int:
                 GridClass = PopGrid if args.mode == "pop" else AreaGrid
                 grid = GridClass(
                     iso, n=args.n, cluster_distance_km=args.cluster,
-                    palette=palette, dissolve_by=dissolve,
+                    palette=palette, dissolve_by=dissolve, engine=args.engine,
+                    exclude=args.exclude,
                 )
                 grid.build()
                 fig = grid.plot(

@@ -361,3 +361,20 @@ def test_areagrid_from_geodataframe_ignores_weight():
     counts = _region_counts(ag)
     # Equal-area squares → roughly equal block counts.
     assert abs(int(counts["A"]) - int(counts["C"])) <= 0.25 * int(counts["A"])
+
+
+# ── colour stability across grid modes ────────────────────────────────────────
+
+@pytest.mark.parametrize("iso", ["AUS", "ESP", "USA", "CHN", "GBR", "BRA", "RUS"])
+def test_area_and_population_maps_share_colours(iso):
+    """
+    The land-area and population maps of a country must colour every region
+    identically, whatever the population engine does to the geometry
+    (coastline simplification, zero-block drops, cartogram deformation).
+    """
+    from popgrid import PopGrid
+    ag = AreaGrid(iso, n=200)
+    ag.build()
+    pg = PopGrid(iso, n=200)
+    pg.build()
+    assert ag.color_map == pg.color_map

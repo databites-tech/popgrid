@@ -2,6 +2,109 @@
 
 All notable changes to popgrid are documented here.
 
+## [0.6.0] - Unreleased
+
+Every country. popgrid no longer depends on a hand-maintained population
+table for the countries it can draw.
+
+### Added
+- **`popgrid/resources/population_ghs.csv`**: population of every Natural
+  Earth admin-1 unit on Earth (4,561 rows, 251 countries), summed from the
+  JRC GHS-POP 2025 raster (30 arc-second grid, about 1 km) with
+  area-weighted zonal statistics. `PopGrid` falls back to it for any country
+  without rows in the curated `population.csv`, so `PopGrid("CHL")`,
+  `PopGrid("IND")` or `PopGrid("NGA")` now work with no setup. The curated
+  census figures for the original 24 countries still take priority.
+- **`scripts/build_population_ghs.py`** regenerates that table from the
+  raster (not in the repo, about 480 MB from the JRC open data server).
+- **`popgrid.bundled_countries()`** (the 24 curated) and
+  **`popgrid.supported_countries()`** (207 countries with at least three
+  admin-1 units).
+- **`generate.py WORLD`** renders every supported country. `ALL` keeps its
+  meaning: the 24 curated ones.
+- Dissolve settings for countries whose Natural Earth level is far finer than
+  what people recognise: Slovenia (193 municipalities → 12 regions), Latvia
+  (119 → 5), Uganda (112 → 4), Malta (68 → 3), Azerbaijan (78 → 10),
+  Thailand (77 → 6).
+
+- **Diffusion cartogram engine** (Gastner & Newman 2004), pure NumPy, as
+  `engine="diffusion"` on `PopGrid` and `--engine` on the CLI. It solves the
+  density-equalising flow in Fourier space and carries the map along it, so
+  the mapping is continuous by construction: regions can shrink twenty-fold
+  without tearing. The default `engine="auto"` keeps the rubber-sheet engine
+  and switches to diffusion only when that one fails, detected by folded
+  (degenerate) polygons in its output, a tripped divergence guard, or a
+  region more than 2× off target. That is what used to produce the hole in
+  China and the detached west; China, the UK, Canada, India, Mongolia and
+  Algeria now take the diffusion path, the other curated countries render as
+  before. The "China leaves a void" limitation is gone.
+- **`exclude=`** on the constructors, `from_geodataframe` and the CLI
+  (`--exclude NAME ...`): regions removed before the grid is built, so they
+  take no blocks and the others' shares are computed without them. Countries
+  carry a default list of uninhabited specks that would otherwise earn one
+  land block and zero population blocks: Macquarie and Lord Howe Islands
+  (AUS), the Paracel Islands (CHN), Bouvet Island (NOR). Svalbard and the
+  like stay, since empty land next to a shrunken population map is the
+  point of the comparison.
+- `panel_regions` per-country setting: regions always drawn as a panel inset.
+  Set for the USA so Alaska stops rendering inline above Washington (its
+  panhandle passed the proximity test) while its islands sat in a panel.
+
+### Changed
+- **Readability pass on the default figure.** Subtitle 13 → 17 pt (19 pt in
+  compare mode), panel-inset heading and names 12/10 → 14/13 pt with room so
+  they no longer touch the inset border, source line 9 → 10 pt. Label colour
+  is now chosen by WCAG contrast ratio (black or white, whichever contrasts
+  more with the block colour) instead of a luminance threshold, and the halo
+  behind every label is heavier and more opaque, so labels read on dark blue,
+  red and purple blocks as well as on light ones.
+- Per-country `display_names` in `RECOMMENDED_SETTINGS`: label renames that
+  still go through the fitter (Spain: `Foral de Navarra` → `Navarra`,
+  `Islas Baleares` → `Baleares`, `Canary Is.` → `Canary Islands`).
+- `generate.py --data` (any GeoJSON, GeoPackage, Shapefile, Parquet or CSV
+  with an `iso3` column) and `examples/data/europe.geojson` landed with 0.5.0's
+  commit; documented here since the 0.5.0 notes predate them.
+
+### Fixed
+- **Region colours are now identical between the land-area and population
+  maps of every country.** `PopGrid` assigned colours after simplifying
+  high-vertex coastlines and dropping zero-block regions; both change the
+  border graph and region order that the colouring derives from, so the same
+  state could come out brown on one side and grey on the other (Australia).
+  Colours are now assigned from the raw projected geometry, before any
+  population-specific step, and a test checks seven countries end to end.
+- Leader-line labels for one- and two-block territories (Ceuta, Melilla,
+  Lord Howe Island) were 5.5 pt italic; they are now 10 pt bold with a halo.
+- **Uninhabited islands no longer get the country's mean population.** A
+  region without a curated row used to receive the mean of the known ones:
+  Macquarie Island was drawn with 2.5 million people (10 % of Australia's
+  blocks), Bouvet Island with 270,000 (5 % of Norway's). Such regions now take
+  their GHS-POP value first, which is zero for uninhabited land, so they get
+  no blocks.
+- Packaging metadata uses the SPDX license form (`license = "MIT"`,
+  `license-files`) instead of the deprecated table and classifier; builds
+  are warning-free and keep working after setuptools drops the old form.
+- The "no cell centres fell inside landmass" message for single-cell islets
+  is logged at INFO, not WARNING, so `generate.py` output is quiet by default.
+- Polygons that become invalid when projected (rings crossing the
+  antimeridian: Chukotka, Fiji) are repaired right after projection. Some
+  GEOS versions raise `TopologyException` from plain `intersects` on them,
+  which broke `AreaGrid("RUS")` on those installs.
+- Natural Earth's seven nameless admin-1 islets (a few km² each, off Russia,
+  Mexico, Colombia, Venezuela and others) are dropped instead of receiving a
+  made-up fallback population.
+
+### Notes
+- GHS-POP is a modelled estimate, not a census. Against the curated census
+  rows the median region-level difference is 2 to 10 % per country, with
+  larger gaps where Natural Earth's polygon does not match the statistical
+  unit (the UK's "Merseyside", Korea's metropolitan cities). For a map where
+  one block is 0.1 % of the country, that is well below what the eye can see,
+  and the number always matches the shape actually drawn.
+- Geometry still comes from Natural Earth, including its treatment of
+  disputed areas (Kashmir, Crimea, Western Sahara). Check before publishing a
+  map of a contested region.
+
 ## [0.5.0] - 2026-10-27
 
 The matplotlib release. popgrid maps now drop into your own figures, every

@@ -267,3 +267,27 @@ def test_invalid_label_mode_raises(germany):
     with pytest.raises(ValueError):
         germany.draw(ax, label_mode="tiny")
     plt.close(fig)
+
+
+# ── contrast and display names ────────────────────────────────────────────────
+
+def test_text_color_picks_higher_contrast():
+    from popgrid.render import _contrast, _text_color
+    for bg in ("#4E79A7", "#1A3829", "#E15759", "#EDC948", "#ffffff", "#000000"):
+        fg = _text_color(bg)
+        other = "#111111" if fg == "#ffffff" else "#ffffff"
+        assert _contrast(bg, fg) >= _contrast(bg, other)
+        assert _contrast(bg, fg) >= 4.4   # readable on every palette colour
+
+
+def test_display_names_apply_to_labels():
+    pg = AreaGrid("ESP", n=400)
+    pg.build()
+    fig, ax = plt.subplots(figsize=(12, 10))
+    pg.draw(ax)
+    texts = {t.get_text().replace("\n", " ") for t in ax.texts}
+    # Renamed before fitting: either the full new name or its abbreviation,
+    # never the Natural Earth name or an abbreviation of it.
+    assert texts & {"Baleares", "BAL"}
+    assert not texts & {"Islas Baleares", "IB"}
+    plt.close(fig)

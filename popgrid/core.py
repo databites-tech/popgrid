@@ -36,6 +36,8 @@ from .render import build_adjacency_color_map, build_color_map, create_figure, d
 
 logger = logging.getLogger(__name__)
 
+ENGINES = ("auto", "dougenik", "diffusion")
+
 
 def _country_title(iso3: str, region_label: Optional[str] = None) -> str:
     """
@@ -335,7 +337,11 @@ class AreaGrid:
         subtitle: Optional[str] = None,
         data_source: Optional[str] = None,
         color_map: Optional[dict[str, str]] = None,
+        engine: str = "auto",
+        exclude: Optional[list[str]] = None,
     ) -> None:
+        if engine not in ENGINES:
+            raise ValueError(f"engine must be one of {ENGINES}; got {engine!r}")
         self.country_iso3 = country_iso3.strip().upper()
         self.n = n
         self.cluster_distance_km = cluster_distance_km
@@ -347,6 +353,15 @@ class AreaGrid:
         # Explicit {region_name: hex} colours; applied on top of the palette
         # assignment so regions you don't name keep their automatic colour.
         self.color_overrides: dict[str, str] = dict(color_map or {})
+        # Cartogram engine used by PopGrid: 'dougenik' (rubber-sheet),
+        # 'diffusion' (Gastner-Newman) or 'auto' (rubber-sheet, falling back to
+        # diffusion when it fails to converge, e.g. China, Russia, Canada).
+        self.engine = engine
+        # Regions removed before the grid is built, so they take no blocks and
+        # the remaining regions' shares are computed without them. Merged with
+        # the country's RECOMMENDED_SETTINGS["exclude"] (uninhabited specks
+        # such as Macquarie Island).
+        self.exclude: set[str] = set(exclude or ())
 
         # Custom GeoDataFrame path (from_geodataframe)
         self._custom_gdf: Optional[gpd.GeoDataFrame] = None
@@ -419,6 +434,8 @@ class AreaGrid:
                 self.country_iso3,
                 dissolve_by=self.dissolve_by,
             )
+
+        self._regions_wgs84 = self._apply_exclude(self._regions_wgs84)
 
         # 2. Project to country-centred LAEA (equal-area, metres)
         logger.info("[2/5] Projecting to equal-area CRS …")
@@ -636,7 +653,42 @@ class AreaGrid:
             style=style,
             label_mode=label_mode,
             labels=labels,
+            panel_regions=self._panel_regions(),
+            display_names=self._display_names(),
         )
+
+    def _excluded(self) -> set[str]:
+        """Regions to drop before building: constructor ``exclude`` plus the country default."""
+        out = set(self.exclude)
+        if self._custom_gdf is None:
+            out |= set(RECOMMENDED_SETTINGS.get(self.country_iso3, {}).get("exclude", ()))
+        return out
+
+    def _apply_exclude(self, regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        excluded = self._excluded()
+        if not excluded:
+            return regions
+        names = regions["region_name"].astype(str)
+        hit = names.isin(excluded)
+        missing = sorted(excluded - set(names))
+        if missing:
+            logger.warning("exclude: region(s) not found and ignored: %s", missing)
+        if hit.any():
+            logger.info("Excluding %d region(s): %s", int(hit.sum()), sorted(names[hit]))
+            regions = regions[~hit].reset_index(drop=True)
+        return regions
+
+    def _display_names(self) -> dict[str, str]:
+        """Label renames for this country (per RECOMMENDED_SETTINGS); not for custom data."""
+        if self._custom_gdf is not None:
+            return {}
+        return dict(RECOMMENDED_SETTINGS.get(self.country_iso3, {}).get("display_names", {}))
+
+    def _panel_regions(self) -> set[str]:
+        """Regions this country always shows in a panel inset (per RECOMMENDED_SETTINGS)."""
+        if self._custom_gdf is not None:
+            return set()
+        return set(RECOMMENDED_SETTINGS.get(self.country_iso3, {}).get("panel_regions", ()))
 
     def draw(
         self,
@@ -706,6 +758,8 @@ class AreaGrid:
             style=style,
             label_mode=label_mode,
             labels=labels,
+            panel_regions=self._panel_regions(),
+            display_names=self._display_names(),
         )
 
     def save(
@@ -752,6 +806,8 @@ class AreaGrid:
         subtitle: Optional[str] = None,
         data_source: Optional[str] = None,
         color_map: Optional[dict[str, str]] = None,
+        engine: str = "auto",
+        exclude: Optional[list[str]] = None,
     ) -> "AreaGrid":
         """
         Build an AreaGrid or PopGrid from any GeoDataFrame — no Natural Earth
@@ -790,6 +846,9 @@ class AreaGrid:
         color_map:
             ``{region_name: hex}`` colours to pin. Unlisted regions keep
             their automatic palette colour.
+        exclude:
+            Region names to remove before building. They take no blocks and
+            do not count toward the total.
 
         Returns
         -------
@@ -818,7 +877,8 @@ class AreaGrid:
         instance = cls(
             "CUSTOM", n=n, cluster_distance_km=cluster_distance_km,
             palette=palette, dissolve_by=None, title=title, subtitle=subtitle,
-            data_source=data_source, color_map=color_map,
+            data_source=data_source, color_map=color_map, engine=engine,
+            exclude=exclude,
         )
         instance._custom_gdf = gdf
         instance._custom_region_col = region_col
@@ -911,6 +971,19 @@ def _reanchor_secondary(
     return out
 
 
+def _is_folded(geom) -> bool:
+    """
+    True when a deformed region polygon has collapsed on itself: ``make_valid``
+    turned it into a GeometryCollection with line or point fragments, which is
+    what a torn rubber sheet looks like (China's western provinces).
+    """
+    if geom is None or geom.is_empty:
+        return False
+    if geom.geom_type == "GeometryCollection":
+        return True
+    return False
+
+
 class PopGrid(AreaGrid):
     """
     Population tiled map — each cell represents an equal share of the
@@ -930,6 +1003,38 @@ class PopGrid(AreaGrid):
     dissolve_by, palette, cluster_distance_km, title, subtitle, data_source:
         Same as :class:`AreaGrid`.
     """
+
+    def _deform(self, shaped: gpd.GeoDataFrame, sub_pops: dict[str, float]) -> gpd.GeoDataFrame:
+        """
+        Run the configured cartogram engine on one landmass.
+
+        ``auto`` tries the rubber-sheet engine first and switches to diffusion
+        when it did not converge (its divergence guard tripped) or left a
+        region more than 2× off its target area: that is the China case, where
+        the sheet tears. A per-country ``engine`` in RECOMMENDED_SETTINGS
+        overrides ``auto``.
+        """
+        from .cartogram import diffusion_cartogram, dougenik_cartogram  # avoids cycles
+
+        engine = self.engine
+        if engine == "auto":
+            engine = RECOMMENDED_SETTINGS.get(self.country_iso3, {}).get("engine", "auto")
+        if engine == "diffusion":
+            return diffusion_cartogram(shaped, sub_pops)
+        diag: dict = {}
+        out = dougenik_cartogram(
+            shaped, sub_pops, iterations=60, max_step_fraction=0.5, diagnostics=diag
+        )
+        if engine == "auto":
+            folded = int(sum(_is_folded(g) for g in out.geometry))
+            if folded or not diag.get("converged", True) or diag.get("max_error", 1) > 2.0:
+                logger.info(
+                    "%s: rubber-sheet cartogram failed (%d folded region(s), converged=%s, "
+                    "max area error %.2f); using diffusion engine",
+                    self.country_iso3, folded, diag.get("converged"), diag.get("max_error", 0),
+                )
+                return diffusion_cartogram(shaped, sub_pops)
+        return out
 
     def build(self) -> "PopGrid":
         """
@@ -979,12 +1084,23 @@ class PopGrid(AreaGrid):
                 self.country_iso3, dissolve_by=self.dissolve_by
             )
 
+        self._regions_wgs84 = self._apply_exclude(self._regions_wgs84)
+
         # ── 2. Project + global cell size ──────────────────────────────────
         logger.info("[2/6] Projecting to equal-area CRS …")
         self._regions_proj, self._crs = project_regions(self._regions_wgs84)
         total_area_m2: float = self._regions_proj.geometry.union_all().area
         self._cell_size = cell_size_for_n(total_area_m2, self.n)
         cell_area = self._cell_size ** 2
+
+        # Colour NOW, from the raw projected geometry, before anything
+        # population-specific touches it. Colours derive from the real border
+        # graph plus land area, and AreaGrid computes them from exactly this
+        # geometry; the coastline simplification and the zero-block drop below
+        # both change the inputs (simplified borders stop touching, dropped
+        # regions shift the greedy order), so colouring after them would give
+        # the same state a different colour in the two maps.
+        self._assign_stable_colors()
 
         # Simplify only *pathologically* high-vertex outlines (e.g. UK
         # 'Highlands and Islands' at 4,200+ vertices), whose coastline detail
@@ -1139,9 +1255,7 @@ class PopGrid(AreaGrid):
                     str(n): max(float(pop_weights.get(str(n), 1)), 1.0)
                     for n in shaped["region_name"]
                 }
-                shaped = dougenik_cartogram(
-                    shaped, sub_pops, iterations=60, max_step_fraction=0.5
-                )
+                shaped = self._deform(shaped, sub_pops)
 
             if lm.id == mainland_id:
                 def_bbox = tuple(shaped.total_bounds)
@@ -1206,9 +1320,6 @@ class PopGrid(AreaGrid):
         self._landmasses = meta
 
         all_region_names = self._regions_proj["region_name"].dropna().tolist()
-        # Colour from mode-invariant geography (real adjacency + land area) so
-        # this population map and an AreaGrid of the same country share colours.
-        self._assign_stable_colors()
         self._built = True
 
         if self.subtitle is None:

@@ -82,25 +82,35 @@ ADMIN1_IS_CORRECT: list[str] = [
 # Run ``python examples/inspect_country.py <ISO3>`` to check any country.
 RECOMMENDED_SETTINGS: dict[str, dict] = {
     # ── dissolve_by='region' gives the correct admin-1 parent level ──────────
-    "ESP": {"dissolve_by": "region"},  # 52 provinces  → 19 CCAA
+    # 'exclude' lists uninhabited specks that would otherwise earn one land
+    # block and zero population blocks: noise on the land side, absent on the
+    # population side. Inhabited or large territories (Svalbard, Ceuta) stay.
+    "ESP": {"dissolve_by": "region",   # 52 provinces  → 19 CCAA
+            "display_names": {"Foral de Navarra": "Navarra", "Canary Is.": "Canary Islands",
+                              "Islas Baleares": "Baleares"}},
     "ITA": {"dissolve_by": "region"},  # 110 province  → 20 regioni
     "FRA": {"dissolve_by": "region"},  # 101 depts     → 18 régions
     "PHL": {"dissolve_by": "region"},  # 118 provinces → 17 regions
 
     # ── Already at the correct admin-1 level (no dissolve needed) ────────────
     "DEU": {"dissolve_by": None},   # 16 Bundesländer
-    "USA": {"dissolve_by": None},   # 51 states  ← 'region' = census division (4 groups, wrong)
+    # 51 states ('region' = census division, 4 groups, wrong). Alaska's
+    # panhandle sits close enough to Washington to pass the inline test, so
+    # it is forced into a panel together with Hawaii.
+    "USA": {"dissolve_by": None, "panel_regions": ["Alaska", "Hawaii"]},
     "BRA": {"dissolve_by": None},   # 27 states
     "MEX": {"dissolve_by": None},   # 32 states
     "ARG": {"dissolve_by": None},   # 24 provinces
-    "AUS": {"dissolve_by": None},   # 8  states/territories
+    "AUS": {"dissolve_by": None,    # 8  states/territories
+            "exclude": ["Macquarie Island", "Lord Howe Island"]},
     "CAN": {"dissolve_by": None},   # 13 provinces/territories
     "JPN": {"dissolve_by": "region", "cluster_distance_km": 100},  # 9 regions; 100km peels Okinawa into its own panel
-    "CHN": {"dissolve_by": None},   # 32 provinces
+    "CHN": {"dissolve_by": None, "exclude": ["Paracel Islands"]},   # 32 provinces
     "NLD": {"dissolve_by": None},   # 12 provinces
     "POL": {"dissolve_by": None},   # 16 voivodeships
     "SWE": {"dissolve_by": None},   # 21 counties
-    "NOR": {"dissolve_by": None},   # 15 regions
+    "NOR": {"dissolve_by": None, "exclude": ["Bouvet Island"],
+            "panel_regions": ["Svalbard"]},   # 15 regions; Bjørnøya would float inline
     "TUR": {"dissolve_by": None},   # 81 provinces
     "ZAF": {"dissolve_by": None},   # 9  provinces
     "KOR": {"dissolve_by": None},   # 17 regions
@@ -116,6 +126,17 @@ RECOMMENDED_SETTINGS: dict[str, dict] = {
     # 'region' field groups them into 16 sub-regions (English regions + Welsh,
     # Scottish, NI groupings). Coarser and far more legible than 232 districts.
     "GBR": {"dissolve_by": "region"},
+
+    # ── Countries served by the GHS-POP fallback table ───────────────────────
+    # Natural Earth is far more granular than the level people recognise;
+    # its 'region' field gives the sensible parent level.
+    "SVN": {"dissolve_by": "region"},   # 193 municipalities → 12 statistical regions
+    "LVA": {"dissolve_by": "region"},   # 119 municipalities → 5 planning regions
+    "UGA": {"dissolve_by": "region"},   # 112 districts      → 4 regions
+    "MLT": {"dissolve_by": "region"},   # 68 local councils  → 3 regions
+    "AZE": {"dissolve_by": "region"},   # 78 districts       → 10 economic regions
+    "THA": {"dissolve_by": "region"},   # 77 provinces       → 6 regions
+    # RUS (86 federal subjects) and VNM (63 provinces) stay at admin-1, as TUR does.
 }
 
 
@@ -349,12 +370,79 @@ def load_country_regions(
 
     # ── Standard path ─────────────────────────────────────────────────────────
     regions = regions.rename(columns={"name": "region_name"})
+    # Natural Earth has a handful of nameless islets (a few km² each, e.g. one
+    # off Russia, one off Mexico). They have no population row and would only
+    # ever get a fallback weight, so they are dropped.
+    named = regions["region_name"].notna() & (regions["region_name"].astype(str).str.strip() != "")
+    if (~named).any():
+        logger.debug("Dropping %d nameless admin-1 unit(s) for %s", int((~named).sum()), iso)
+        regions = regions[named].copy()
     regions["region_id"] = range(len(regions))
     keep = ["region_id", "region_name", "geometry"]
     regions = regions[keep].reset_index(drop=True)
 
     logger.info("Loaded %d admin-1 regions for %s", len(regions), iso)
     return regions
+
+
+_RESOURCES = Path(__file__).parent / "resources"
+#: Hand-curated census figures for a few countries, at the level popgrid draws.
+_CURATED_CSV = _RESOURCES / "population.csv"
+#: Every Natural Earth admin-1 unit on Earth, summed from the GHS-POP 2025
+#: raster. Regenerate with ``scripts/build_population_ghs.py``; never edit.
+_GHS_CSV = _RESOURCES / "population_ghs.csv"
+
+
+def _read_population_rows(csv_path: Path, iso3: str) -> dict[str, int]:
+    """``{region_name: population}`` for one country from one table."""
+    import csv as _csv
+
+    out: dict[str, int] = {}
+    if not csv_path.exists():
+        logger.warning("population table not found at %s", csv_path)
+        return out
+    iso = iso3.strip().upper()
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        for row in _csv.DictReader(fh):
+            if (row.get("iso3") or "").strip().upper() != iso:
+                continue
+            name = (row.get("region_name") or "").strip()
+            try:
+                pop = int(float(row["population"]))
+            except (ValueError, KeyError, TypeError):
+                pop = 0
+            if name:
+                out[name] = out.get(name, 0) + pop
+    return out
+
+
+def _table_iso3s(csv_path: Path, min_regions: int = 1) -> list[str]:
+    import csv as _csv
+    from collections import Counter
+
+    if not csv_path.exists():
+        return []
+    counts: Counter = Counter()
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        for row in _csv.DictReader(fh):
+            iso = (row.get("iso3") or "").strip().upper()
+            if iso:
+                counts[iso] += 1
+    return sorted(iso for iso, n in counts.items() if n >= min_regions)
+
+
+def bundled_countries() -> list[str]:
+    """ISO3 codes with hand-curated census populations (``population.csv``)."""
+    return _table_iso3s(_CURATED_CSV)
+
+
+def supported_countries(min_regions: int = 3) -> list[str]:
+    """
+    Every ISO3 code :class:`PopGrid` can draw: the curated set plus all
+    countries in the GHS-POP table with at least ``min_regions`` admin-1
+    units (fewer than that makes no map worth looking at).
+    """
+    return sorted(set(bundled_countries()) | set(_table_iso3s(_GHS_CSV, min_regions)))
 
 
 def load_region_populations(
@@ -365,9 +453,11 @@ def load_region_populations(
     """
     Return ``{region_name: population}`` for the given country.
 
-    Reads from the bundled ``resources/population.csv``.  For regions
-    not found in the CSV, falls back to the mean of known values so the
-    total stays roughly proportional.
+    Reads the hand-curated ``resources/population.csv`` first. Countries
+    without curated rows fall back to ``resources/population_ghs.csv``,
+    GHS-POP 2025 estimates summed over every Natural Earth admin-1 unit,
+    which covers every country. For regions found in neither, the mean of
+    known values is used so the total stays roughly proportional.
 
     Parameters
     ----------
@@ -381,24 +471,14 @@ def load_region_populations(
     -------
     dict mapping region_name → integer population estimate.
     """
-    import csv as _csv
-
-    csv_path = Path(__file__).parent / "resources" / "population.csv"
-
-    country_pops: dict[str, int] = {}
-    if csv_path.exists():
-        with open(csv_path, newline="", encoding="utf-8") as fh:
-            reader = _csv.DictReader(fh)
-            for row in reader:
-                if row["iso3"].strip().upper() == iso3.upper():
-                    name = row["region_name"].strip()
-                    try:
-                        pop = int(float(row["population"]))
-                    except (ValueError, KeyError):
-                        pop = 0
-                    country_pops[name] = pop
-    else:
-        logger.warning("population.csv not found at %s", csv_path)
+    country_pops = _read_population_rows(_CURATED_CSV, iso3)
+    ghs_pops = _read_population_rows(_GHS_CSV, iso3)
+    if not country_pops:
+        country_pops = ghs_pops
+        if country_pops:
+            logger.info(
+                "%s: no curated population rows; using GHS-POP 2025 estimates", iso3
+            )
 
     result: dict[str, int] = {}
     missing: list[str] = []
@@ -413,9 +493,23 @@ def load_region_populations(
             agg[parent] = agg.get(parent, 0) + pop
         country_pops = agg
 
+    if name_to_parent and ghs_pops is not country_pops:
+        agg_ghs: dict[str, int] = {}
+        for fine_name, pop in ghs_pops.items():
+            parent = name_to_parent.get(fine_name, fine_name)
+            agg_ghs[parent] = agg_ghs.get(parent, 0) + pop
+        ghs_pops = agg_ghs
+
     for name in region_names:
         if name in country_pops and country_pops[name] > 0:
             result[name] = country_pops[name]
+        elif name in ghs_pops:
+            # A region the curated table skipped (Macquarie Island, Bouvet
+            # Island): take the GHS estimate, which is 0 for uninhabited
+            # land, so the region gets no blocks instead of the country mean.
+            result[name] = ghs_pops[name]
+            logger.info("%s: %r not in curated table; GHS estimate %d",
+                        iso3, name, ghs_pops[name])
         else:
             missing.append(name)
 
