@@ -32,7 +32,7 @@ from .data import (
 )
 from .geometry import detect_landmasses, project_regions
 from .grid import cell_size_for_n, generate_cells
-from .render import build_adjacency_color_map, build_color_map, create_figure
+from .render import build_adjacency_color_map, build_color_map, create_figure, draw_map
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +334,7 @@ class AreaGrid:
         title: Optional[str] = None,
         subtitle: Optional[str] = None,
         data_source: Optional[str] = None,
+        color_map: Optional[dict[str, str]] = None,
     ) -> None:
         self.country_iso3 = country_iso3.strip().upper()
         self.n = n
@@ -343,6 +344,9 @@ class AreaGrid:
         self.title = title
         self.subtitle = subtitle
         self.data_source = data_source
+        # Explicit {region_name: hex} colours; applied on top of the palette
+        # assignment so regions you don't name keep their automatic colour.
+        self.color_overrides: dict[str, str] = dict(color_map or {})
 
         # Custom GeoDataFrame path (from_geodataframe)
         self._custom_gdf: Optional[gpd.GeoDataFrame] = None
@@ -385,6 +389,15 @@ class AreaGrid:
         self._color_map = build_adjacency_color_map(
             names, adjacency, self.palette, sizes=sizes
         )
+        if self.color_overrides:
+            unknown = sorted(set(self.color_overrides) - set(self._color_map))
+            if unknown:
+                logger.warning(
+                    "color_map names not found among regions (ignored): %s", unknown
+                )
+            self._color_map.update(
+                {k: v for k, v in self.color_overrides.items() if k in self._color_map}
+            )
 
     def build(self) -> "AreaGrid":
         """
@@ -519,9 +532,15 @@ class AreaGrid:
         background_style: str = "grid",
         show_region_borders: bool = True,
         data_source: Optional[str] = None,
+        style: Optional[dict] = None,
+        label_mode: str = "auto",
+        labels: Optional[dict[str, str]] = None,
     ) -> plt.Figure:
         """
-        Render the population grid map.
+        Render the grid map as a complete, self-contained Figure.
+
+        For drawing into your own Axes (subplots, custom layouts) use
+        :meth:`draw` instead.
 
         Parameters
         ----------
@@ -556,6 +575,20 @@ class AreaGrid:
         data_source:
             Attribution string shown bottom-left of the figure, e.g.
             ``'Natural Earth · popgrid'``.
+        style:
+            Visual overrides as a dict. Keys: ``edge_color``, ``edge_width``,
+            ``grid_color``, ``grid_width``, ``cell_gap``, ``label_color``,
+            ``label_size``, ``label_min_size``, ``label_max_size``,
+            ``label_weight``, ``label_font``. Any key left out keeps its
+            automatic value. See :data:`popgrid.render.DEFAULT_STYLE`.
+        label_mode:
+            ``'auto'`` (default) sizes each label to its region: the full name
+            if it fits, otherwise wrapped on two lines, otherwise an
+            abbreviation (``Castilla y León`` → ``CL``). ``'full'`` never
+            abbreviates, ``'short'`` always does, ``'none'`` draws no labels.
+        labels:
+            ``{region_name: text}`` to override individual labels. An empty
+            string hides that region's label.
 
         Returns
         -------
@@ -600,6 +633,79 @@ class AreaGrid:
             background_style=background_style,
             show_region_borders=show_region_borders,
             data_source=data_source if data_source is not None else self.data_source,
+            style=style,
+            label_mode=label_mode,
+            labels=labels,
+        )
+
+    def draw(
+        self,
+        ax: plt.Axes,
+        *,
+        scope: str = "islands",
+        show_labels: bool = True,
+        label_min_cells: int = 3,
+        background_style: str = "grid",
+        background_color: Optional[str] = None,
+        show_region_borders: bool = True,
+        style: Optional[dict] = None,
+        label_mode: str = "auto",
+        labels: Optional[dict[str, str]] = None,
+    ) -> plt.Axes:
+        """
+        Draw the grid map into an existing Matplotlib Axes.
+
+        Use this to put a popgrid map inside your own figure: a row of
+        subplots comparing several countries, a map next to a chart, a
+        custom title block. Nothing but the map is drawn: no title, no
+        subtitle, no source line, no panel insets. Those stay with
+        :meth:`plot`, which builds a complete figure.
+
+        ::
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            AreaGrid("ESP").draw(ax1)
+            PopGrid("ESP").draw(ax2)
+
+        Parameters
+        ----------
+        ax:
+            Target Axes. The map is drawn with an equal aspect ratio and the
+            axis is turned off.
+        scope:
+            ``'islands'`` (default) draws the main landmass plus nearby inline
+            islands; ``'mainland'`` the main landmass only. Distant territories
+            (Canary Islands, Hawaii, overseas France) are never drawn into a
+            single Axes; call :meth:`draw` on a separate Axes with a filtered
+            grid if you need them, or use :meth:`plot`. ``'all'`` is accepted
+            and behaves like ``'islands'``.
+        background_color:
+            Fill colour for the Axes. ``None`` (default) leaves the Axes as it
+            is, so the map takes on your figure's background.
+        show_labels, label_min_cells, background_style, show_region_borders,
+        style, label_mode, labels:
+            Same as :meth:`plot`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The same ``ax``, so calls can be chained.
+        """
+        self._ensure_built()
+        return draw_map(
+            ax,
+            landmasses=self._landmasses,  # type: ignore[arg-type]
+            color_map=self._color_map,  # type: ignore[arg-type]
+            cell_size=self._cell_size,  # type: ignore[arg-type]
+            scope=scope,
+            show_labels=show_labels,
+            label_min_cells=label_min_cells,
+            background_style=background_style,
+            background_color=background_color,
+            show_region_borders=show_region_borders,
+            style=style,
+            label_mode=label_mode,
+            labels=labels,
         )
 
     def save(
@@ -645,6 +751,7 @@ class AreaGrid:
         title: Optional[str] = None,
         subtitle: Optional[str] = None,
         data_source: Optional[str] = None,
+        color_map: Optional[dict[str, str]] = None,
     ) -> "AreaGrid":
         """
         Build an AreaGrid or PopGrid from any GeoDataFrame — no Natural Earth
@@ -680,6 +787,9 @@ class AreaGrid:
         title:
             Figure title.  If ``None``, defaults to ``"A Tiled Map"``.
             Pass a custom string to override, e.g. ``"My Region Map"``.
+        color_map:
+            ``{region_name: hex}`` colours to pin. Unlisted regions keep
+            their automatic palette colour.
 
         Returns
         -------
@@ -703,28 +813,16 @@ class AreaGrid:
             )
             fig = pg.plot(title="Population of Barcelona")
         """
-        instance = cls.__new__(cls)
-        # Minimal __init__ — bypass Natural Earth loading
-        instance.country_iso3 = "CUSTOM"
-        instance.n = n
-        instance.cluster_distance_km = cluster_distance_km
-        instance.palette = palette
-        instance.dissolve_by = None
+        # __init__ does no I/O, so the normal constructor is safe here;
+        # "CUSTOM" is never looked up because _custom_gdf short-circuits build().
+        instance = cls(
+            "CUSTOM", n=n, cluster_distance_km=cluster_distance_km,
+            palette=palette, dissolve_by=None, title=title, subtitle=subtitle,
+            data_source=data_source, color_map=color_map,
+        )
         instance._custom_gdf = gdf
         instance._custom_region_col = region_col
         instance._custom_weight_col = weight_col
-        instance.title = title
-        instance.subtitle = subtitle
-        instance.data_source = data_source
-        instance._title_override = None  # kept for backwards compat, unused
-
-        # Internal state
-        instance._regions_wgs84 = None
-        instance._regions_proj = None
-        instance._landmasses = None
-        instance._cell_size = None
-        instance._color_map = None
-        instance._built = False
         return instance
 
     # ── Dunder ────────────────────────────────────────────────────────────────

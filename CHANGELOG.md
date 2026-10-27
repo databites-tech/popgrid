@@ -2,9 +2,29 @@
 
 All notable changes to popgrid are documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-10-27
+
+The matplotlib release. popgrid maps now drop into your own figures, every
+visual knob is exposed, and region labels size themselves to the space they
+actually have.
 
 ### Added
+- **`AreaGrid.draw(ax)` / `PopGrid.draw(ax)`.** Draw the map into any
+  Matplotlib Axes you already have: subplots, a map next to a chart, a custom
+  layout. Returns the same Axes. `plot()` is unchanged and still builds a
+  complete figure with title, insets and source line; it now uses `draw`
+  internally, so the two render identically.
+- **`style=` dict on `plot()` and `draw()`** with `edge_color`, `edge_width`,
+  `grid_color`, `grid_width`, `cell_gap`, `label_color`, `label_size`,
+  `label_min_size`, `label_max_size`, `label_weight`, `label_font`. Any key
+  left out keeps its automatic value; unknown keys raise. Mirrored on the CLI
+  as `--edge-color`, `--edge-width`, `--grid-color`, `--label-size`.
+- **`color_map=` on the constructors and `from_geodataframe`** to pin
+  specific regions to specific colours; unlisted regions keep their automatic,
+  adjacency-aware palette colour.
+- **`label_mode=`** (`auto` | `full` | `short` | `none`) and **`labels=`**
+  (`{region: text}`, empty string hides a label) on `plot()` and `draw()`,
+  and `--label-mode` on the CLI.
 - **Optional ArcGIS Online publishing** (`popgrid.arcgis`), contributed by
   [@aitorcalero](https://github.com/aitorcalero) in #2: convert popgrid blocks to
   WGS84 GeoDataFrames, publish them as Hosted Feature Layers with region colours,
@@ -12,6 +32,19 @@ All notable changes to popgrid are documented here.
   does not need ArcGIS.
 
 ### Changed
+- **Region labels are sized to fit.** Each label is measured against the
+  largest rectangle inscribed in its region (not the bounding box, which
+  overstated the room in L-shaped regions) using real glyph widths. Big
+  regions now get labels up to 18 pt instead of 11; narrow ones wrap on two
+  lines (`Castilla-` / `La Mancha`), fall back to the name proper for
+  "X de Y" names (`Foral de Navarra` → `Navarra`), and only then abbreviate
+  (`Castilla y León` → `CL`). Abbreviations are capped at 1.5× the minimum
+  size so they never outshout a neighbour's full name.
+- Inline territories below `label_min_cells` get a single leader-line label.
+  Previously two-cell territories such as Ceuta were labelled twice (in-cell
+  and leader line) because the two paths used different thresholds.
+- `from_geodataframe` now goes through `__init__` instead of `cls.__new__`,
+  so new constructor options reach custom-data grids automatically.
 - `publish_hosted_feature_layer` now requires an authenticated `GIS` and raises a
   clear error instead of falling back to an anonymous session that cannot publish.
 

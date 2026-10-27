@@ -72,6 +72,44 @@ PALETTES: dict[str, list[str]] = {
 }
 
 
+# ── Style ─────────────────────────────────────────────────────────────────────
+
+#: Every visual knob that ``draw`` / ``plot`` accept through ``style=``.
+#: ``None`` means "auto": popgrid derives the value from the figure size,
+#: the background colour, or the region colour, exactly as it did before
+#: these options existed.
+DEFAULT_STYLE: dict = {
+    "edge_color": "#000000",   # region outline colour
+    "edge_width": None,        # outline width in points (None → 8% of the cell)
+    "grid_color": None,        # background grid lines / tiles (None → auto)
+    "grid_width": 0.35,        # background grid line width in points
+    "cell_gap": None,          # gap between blocks, fraction of a cell (None → auto)
+    "label_color": None,       # None → black or white, by region luminance
+    "label_size": None,        # fixed label size in points (None → fit to region)
+    "label_min_size": 7.0,     # smallest auto label, in points
+    "label_max_size": 18.0,    # largest auto label, in points
+    "label_weight": "bold",
+    "label_font": None,        # font family (None → matplotlib default)
+}
+
+LABEL_MODES = ("auto", "full", "short", "none")
+
+
+def resolve_style(style: dict | None) -> dict:
+    """Merge a user ``style`` dict over :data:`DEFAULT_STYLE`, rejecting typos."""
+    if style is None:
+        return dict(DEFAULT_STYLE)
+    unknown = sorted(set(style) - set(DEFAULT_STYLE))
+    if unknown:
+        raise ValueError(
+            f"Unknown style key(s): {unknown}. "
+            f"Valid keys: {sorted(DEFAULT_STYLE)}"
+        )
+    merged = dict(DEFAULT_STYLE)
+    merged.update({k: v for k, v in style.items() if v is not None})
+    return merged
+
+
 # ── Colour utilities ──────────────────────────────────────────────────────────
 
 def _luminance(hex_color: str) -> float:
@@ -185,9 +223,15 @@ def _full_grid_background(
     cell_size: float,
     background_color: str,
     style: str = "grid",
+    grid_color: Optional[str] = None,
+    grid_width: float = 0.35,
 ) -> None:
     """
     Draw a background grid or solid fill over the cell bounding box.
+
+    ``grid_color`` overrides the automatic colour (light grey lines for
+    ``'grid'``, a darkened background for ``'solid'``); ``grid_width`` is the
+    line width in points for the ``'grid'`` style.
 
     Alignment guarantee
     -------------------
@@ -213,7 +257,8 @@ def _full_grid_background(
 
     half = cell_size / 2.0
     n_margin = 3          # cells of margin around the country extent
-    grid_fill = _grid_color(background_color)
+    grid_fill = grid_color or _grid_color(background_color)
+    line_color = grid_color or "#b8b8b8"
 
     # ── Anchor to actual cell positions ──────────────────────────────────────
     # Extend outward by integer multiples of cell_size so the grid and
@@ -246,8 +291,8 @@ def _full_grid_background(
 
         lc = LineCollection(
             vsegs + hsegs,
-            colors=["#b8b8b8"],
-            linewidths=0.35,
+            colors=[line_color],
+            linewidths=grid_width,
             zorder=1,
         )
         ax.add_collection(lc)
@@ -286,6 +331,10 @@ def _plot_cells(
     background_style: str = "grid",
     show_region_borders: bool = True,
     border_lw: float = 0.0,
+    style: Optional[dict] = None,
+    label_mode: str = "auto",
+    labels: Optional[dict[str, str]] = None,
+    cell_pts: float = 0.0,
 ) -> None:
     """
     Draw colored cells and optional region borders.
@@ -294,18 +343,24 @@ def _plot_cells(
         Controls the cell gap size to match the background.
 
     show_region_borders=True (default)
-        A thick black outline is drawn around each region's total combined
-        cell area.
+        An outline is drawn around each region's total combined cell area,
+        in ``style["edge_color"]``.
 
     border_lw
         Region border linewidth in points.  When 0 (default), falls back
         to the legacy formula ``cell_size / 18_000``.  create_figure always
         passes a pre-computed value proportional to the visual cell size so
         borders look consistent across countries of all sizes.
+        ``style["edge_width"]`` wins over both when set.
+
+    style, label_mode, labels, cell_pts
+        See :func:`draw_map`.  ``cell_pts`` is the visual size of one cell in
+        points; labels are sized to fit their region from it.
     """
     if cells_gdf is None or cells_gdf.empty:
         return
 
+    st = resolve_style(style)
     cx_vals = cells_gdf["cx"].to_numpy()
     cy_vals = cells_gdf["cy"].to_numpy()
     half = cell_size / 2.0
@@ -313,7 +368,11 @@ def _plot_cells(
     # ── 1. Cell gap ───────────────────────────────────────────────────────────
     # With background ('grid' or 'solid'): 10% gap exposes the background.
     # Without background ('none'): 4% cosmetic gap only.
-    inner = half * 0.90 if background_style != "none" else half * 0.96
+    if st["cell_gap"] is not None:
+        gap = float(np.clip(st["cell_gap"], 0.0, 0.5))
+        inner = half * (1.0 - 2.0 * gap)
+    else:
+        inner = half * 0.90 if background_style != "none" else half * 0.96
 
     # ── 2. Colored cells ──────────────────────────────────────────────────────
     names: list[str] = cells_gdf["region_name"].fillna("Unknown").tolist()
@@ -332,12 +391,15 @@ def _plot_cells(
         import shapely
         from shapely.ops import unary_union
 
-        # Use the pre-computed visual-scale linewidth if provided;
-        # fall back to legacy formula only when called outside create_figure.
-        if border_lw > 0:
+        # Explicit style wins; then the pre-computed visual-scale linewidth;
+        # then the legacy formula for callers outside create_figure / draw_map.
+        if st["edge_width"] is not None:
+            lw = float(st["edge_width"])
+        elif border_lw > 0:
             lw = border_lw
         else:
             lw = float(np.clip(cell_size / 18_000, 1.2, 3.0))
+        edge_color = st["edge_color"]
 
         # Buffer epsilon: bridges diagonal-adjacency gaps so cells that only
         # touch at a corner still merge into one continuous region outline.
@@ -369,12 +431,12 @@ def _plot_cells(
                 if geom.is_empty:
                     continue
                 xs, ys = geom.exterior.xy
-                ax.plot(xs, ys, color="#000000", linewidth=lw,
+                ax.plot(xs, ys, color=edge_color, linewidth=lw,
                         zorder=5, solid_capstyle="round",
                         solid_joinstyle="round")
                 for interior in geom.interiors:
                     xs, ys = interior.xy
-                    ax.plot(xs, ys, color="#000000", linewidth=lw,
+                    ax.plot(xs, ys, color=edge_color, linewidth=lw,
                             zorder=5, solid_capstyle="round",
                             solid_joinstyle="round")
 
@@ -386,54 +448,285 @@ def _plot_cells(
     ax.set_aspect("equal")
     ax.axis("off")
 
-    if not show_labels:
-        return
+    if show_labels and label_mode != "none":
+        _label_regions(
+            ax, cells_gdf, color_map, cell_size,
+            label_min_cells=label_min_cells, style=st,
+            label_mode=label_mode, labels=labels, cell_pts=cell_pts,
+        )
 
-    for region_name, grp in cells_gdf.groupby("region_name"):
-        n_cells = len(grp)
-        if n_cells < label_min_cells:
+
+# ── Region labels ─────────────────────────────────────────────────────────────
+
+# Lower-case connectives dropped when abbreviating a multi-word region name.
+_STOP_WORDS = {
+    "de", "del", "la", "las", "los", "el", "y", "i", "e", "da", "do", "das",
+    "dos", "of", "the", "and", "le", "les", "du", "des", "et", "van", "von",
+    "der", "den", "di", "a", "o",
+}
+
+# Connectives that mark an "X of Y" name, where the last part can stand alone
+# (``Foral de Navarra`` → ``Navarra``). Articles like ``la`` do not qualify:
+# ``Castilla-La Mancha`` is one name, not Castilla of Mancha.
+_GENITIVES = {"de", "del", "of", "du", "des", "di", "da", "do", "van", "von", "der"}
+
+# Average glyph width as a fraction of the font size, for a bold sans face.
+_GLYPH_EM = 0.62
+_LINE_EM = 1.15
+
+
+def _abbreviate(name: str) -> str:
+    """
+    Short form of a region name for cramped labels.
+
+    Multi-word names become initials (``Castilla y León`` → ``CL``,
+    ``New South Wales`` → ``NSW``); single words keep their first three
+    letters (``Madrid`` → ``MAD``).  Lower-case connectives are dropped.
+    """
+    import re
+
+    words = [w for w in re.split(r"[\s\-–/]+", name.strip()) if w]
+    if not words:
+        return name[:3].upper()
+    kept = [w for w in words if w.lower() not in _STOP_WORDS] or words
+    if len(kept) >= 2:
+        return "".join(w[0].upper() for w in kept[:4])
+    return kept[0][:3].upper()
+
+
+def _key_word(name: str) -> Optional[str]:
+    """
+    The distinctive word of a name built around a connective, e.g.
+    ``Foral de Navarra`` → ``Navarra``, ``Region of Murcia`` → ``Murcia``.
+    Returns ``None`` for names without a connective, where no single word
+    can stand in for the whole.
+    """
+    import re
+
+    words = [w for w in re.split(r"[\s\-–/]+", name.strip()) if w]
+    gen_idx = [k for k, w in enumerate(words) if w.lower() in _GENITIVES]
+    if not gen_idx:
+        return None
+    # The part after the last connective is the name proper.
+    after = [w for w in words[gen_idx[-1] + 1:] if w.lower() not in _STOP_WORDS]
+    kept = after or [w for w in words if w.lower() not in _STOP_WORDS]
+    return max(kept, key=len) if kept else None
+
+
+def _wrap_name(name: str) -> Optional[list[str]]:
+    """
+    Split a name into two lines at the space or hyphen closest to its middle.
+    Returns ``None`` when the name has no break point.
+    """
+    import re
+
+    breaks = [m.end() for m in re.finditer(r"[\s]|(?<=-)", name)]
+    breaks = [b for b in breaks if 0 < b < len(name)]
+    if not breaks:
+        return None
+    best = min(breaks, key=lambda b: max(len(name[:b].rstrip()), len(name[b:].lstrip())))
+    return [name[:best].rstrip(), name[best:].lstrip()]
+
+
+def _largest_rectangle(comp: set[tuple[int, int]]) -> tuple[int, int, int, int]:
+    """
+    Largest axis-aligned rectangle of cells fully inside ``comp``.
+
+    Returns ``(i0, j0, cols, rows)`` with ``(i0, j0)`` the lower-left cell.
+    Classic maximal-rectangle-in-binary-matrix via per-row histograms; the
+    grids here are at most a few thousand cells so the cost is negligible.
+    """
+    i_min = min(i for i, _ in comp)
+    i_max = max(i for i, _ in comp)
+    j_min = min(j for _, j in comp)
+    j_max = max(j for _, j in comp)
+    width = i_max - i_min + 1
+    heights = [0] * width
+    best = (i_min, j_min, 1, 1)
+    best_area = 0
+    for j in range(j_min, j_max + 1):
+        for k in range(width):
+            heights[k] = heights[k] + 1 if (i_min + k, j) in comp else 0
+        # Largest rectangle under the histogram ending at this row.
+        stack: list[int] = []
+        for k in range(width + 1):
+            h = heights[k] if k < width else 0
+            while stack and heights[stack[-1]] >= h:
+                top = stack.pop()
+                top_h = heights[top]
+                left = stack[-1] + 1 if stack else 0
+                area = top_h * (k - left)
+                if area > best_area:
+                    best_area = area
+                    best = (i_min + left, j - top_h + 1, k - left, top_h)
+            if k < width:
+                stack.append(k)
+    return best
+
+
+def _largest_component(grp, cell_size: float) -> tuple[float, float, int, int]:
+    """
+    Centre (x, y) and size in cells (width, height) of the largest
+    rectangle inscribed in the region's largest 4-connected block of cells.
+
+    Labels sit on this rectangle rather than on the mean of all cells: for
+    interleaved or L-shaped regions the plain mean can land on a one-cell
+    strip or outside the region entirely; the inscribed rectangle is always
+    solid region, and its size says how much text actually fits.
+    """
+    gcx = grp["cx"].to_numpy()
+    gcy = grp["cy"].to_numpy()
+    gminx, gminy = gcx.min(), gcy.min()
+    keys = {
+        (round((x - gminx) / cell_size), round((y - gminy) / cell_size)): (x, y)
+        for x, y in zip(gcx, gcy)
+    }
+    seen: set = set()
+    best: list = []
+    for start in keys:
+        if start in seen:
             continue
-        # Place the label at the centroid of the region's LARGEST contiguous
-        # block, not the mean of all its cells.  For interleaved central
-        # regions the plain mean can land outside the region or on top of a
-        # neighbour's label; the largest-cluster centroid always sits on the
-        # region's own body.
-        gcx = grp["cx"].to_numpy()
-        gcy = grp["cy"].to_numpy()
-        gminx, gminy = gcx.min(), gcy.min()
-        keys = {
-            (round((x - gminx) / cell_size), round((y - gminy) / cell_size)): (x, y)
-            for x, y in zip(gcx, gcy)
-        }
-        seen: set = set()
-        best_comp: list = []
-        for start in keys:
-            if start in seen:
-                continue
-            comp = [start]
-            stack = [start]
-            seen.add(start)
-            while stack:
-                ci, cj = stack.pop()
-                for nb in ((ci + 1, cj), (ci - 1, cj), (ci, cj + 1), (ci, cj - 1)):
-                    if nb in keys and nb not in seen:
-                        seen.add(nb)
-                        comp.append(nb)
-                        stack.append(nb)
-            if len(comp) > len(best_comp):
-                best_comp = comp
-        pts = np.array([keys[k] for k in best_comp])
-        label_cx = float(pts[:, 0].mean())
-        label_cy = float(pts[:, 1].mean())
+        comp = [start]
+        stack = [start]
+        seen.add(start)
+        while stack:
+            ci, cj = stack.pop()
+            for nb in ((ci + 1, cj), (ci - 1, cj), (ci, cj + 1), (ci, cj - 1)):
+                if nb in keys and nb not in seen:
+                    seen.add(nb)
+                    comp.append(nb)
+                    stack.append(nb)
+        if len(comp) > len(best):
+            best = comp
+    i0, j0, cols, rows = _largest_rectangle(set(best))
+    # Rectangle centre in data coordinates
+    x = gminx + (i0 + (cols - 1) / 2.0) * cell_size
+    y = gminy + (j0 + (rows - 1) / 2.0) * cell_size
+    return float(x), float(y), cols, rows
+
+
+def _text_em(text: str, st: dict) -> float:
+    """Rendered width of ``text`` in em units for the label font."""
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextPath
+
+    try:
+        prop = FontProperties(family=st.get("label_font"), weight=st.get("label_weight", "bold"))
+        path = TextPath((0, 0), text, size=10, prop=prop)
+        x0, _, x1, _ = path.get_extents().extents
+        return max(float(x1 - x0), 1.0) / 10.0
+    except Exception:  # noqa: BLE001  (missing font, headless quirks)
+        return _GLYPH_EM * max(len(text), 1)
+
+
+def _fit_size(lines: list[str], w_pts: float, h_pts: float, st: dict) -> float:
+    """Largest font size (points) at which ``lines`` fit inside a w × h box."""
+    widest_em = max(_text_em(line, st) for line in lines)
+    by_width = (w_pts * 0.94) / widest_em
+    by_height = (h_pts * 0.90) / (_LINE_EM * len(lines))
+    return min(by_width, by_height)
+
+
+def _choose_label(
+    name: str,
+    cols: int,
+    rows: int,
+    cell_pts: float,
+    st: dict,
+    label_mode: str,
+    override: Optional[str],
+) -> tuple[str, float]:
+    """
+    Pick the text and font size for one region label.
+
+    ``auto`` tries the full name, then a two-line wrap, then the abbreviation,
+    taking the first that fits at or above ``label_min_size``.  The
+    abbreviation is used even when it does not fit, so every region above
+    ``label_min_cells`` still gets a readable mark.
+    """
+    lo, hi = float(st["label_min_size"]), float(st["label_max_size"])
+    fixed = st["label_size"]
+    w_pts = cols * cell_pts
+    h_pts = rows * cell_pts
+
+    def size_for(lines: list[str]) -> float:
+        if fixed is not None:
+            return float(fixed)
+        if cell_pts <= 0:  # no scale information: legacy heuristic
+            return float(np.clip(5.0 + np.sqrt(cols * rows) * 0.9, lo, hi))
+        return _fit_size(lines, w_pts, h_pts, st)
+
+    def fits(lines: list[str]) -> bool:
+        if cell_pts <= 0:
+            return True
+        if fixed is not None:
+            return _fit_size(lines, w_pts, h_pts, st) >= float(fixed)
+        return _fit_size(lines, w_pts, h_pts, st) >= lo
+
+    if override is not None:
+        text = override
+        return text, float(np.clip(size_for(text.split("\n")), lo, hi))
+
+    if label_mode == "short":
+        text = _abbreviate(name)
+        return text, float(np.clip(size_for([text]), lo, hi))
+
+    wrapped = _wrap_name(name)
+    if label_mode == "full":
+        lines = [name]
+        if not fits(lines) and wrapped and fits(wrapped):
+            lines = wrapped
+        return "\n".join(lines), float(np.clip(size_for(lines), lo, hi))
+
+    # auto
+    if fits([name]):
+        return name, float(np.clip(size_for([name]), lo, hi))
+    if wrapped and fits(wrapped):
+        return "\n".join(wrapped), float(np.clip(size_for(wrapped), lo, hi))
+    key_word = _key_word(name)
+    if key_word and fits([key_word]):
+        return key_word, float(np.clip(size_for([key_word]), lo, hi))
+    # Abbreviations are a fallback, not a headline: keep them modest so a
+    # three-letter code never outshouts a neighbour's full name.
+    short = _abbreviate(name)
+    return short, float(np.clip(size_for([short]), lo, min(hi, lo * 1.5)))
+
+
+def _label_regions(
+    ax: plt.Axes,
+    cells_gdf,
+    color_map: dict[str, str],
+    cell_size: float,
+    label_min_cells: int,
+    style: dict,
+    label_mode: str = "auto",
+    labels: Optional[dict[str, str]] = None,
+    cell_pts: float = 0.0,
+) -> None:
+    """Write one label per region with at least ``label_min_cells`` cells."""
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}; got {label_mode!r}")
+    labels = labels or {}
+    for region_name, grp in cells_gdf.groupby("region_name"):
+        if len(grp) < label_min_cells:
+            continue
+        name = str(region_name)
+        if name in labels and labels[name] in ("", None):
+            continue
+        x, y, cols, rows = _largest_component(grp, cell_size)
+        text, fontsize = _choose_label(
+            name, cols, rows, cell_pts, style, label_mode, labels.get(name)
+        )
         bg = color_map.get(region_name, "#cccccc")  # type: ignore[arg-type]
-        fg = _text_color(bg)
-        outline = "#00000066" if fg == "#ffffff" else "#ffffff99"
-        fontsize = float(np.clip(5.0 + np.sqrt(len(best_comp)) * 0.9, 5.0, 11.0))
+        fg = style["label_color"] or _text_color(bg)
+        outline = "#00000066" if _luminance(fg) > 0.5 else "#ffffff99"
         ax.text(
-            label_cx, label_cy, region_name,
+            x, y, text,
             fontsize=fontsize, ha="center", va="center",
-            fontweight="bold", color=fg, zorder=4,
-            path_effects=[withStroke(linewidth=1.5, foreground=outline)],
+            fontweight=style["label_weight"], fontfamily=style["label_font"],
+            color=fg, zorder=4, linespacing=1.05,
+            path_effects=[withStroke(linewidth=max(1.5, fontsize * 0.16),
+                                     foreground=outline)],
         )
 
 
@@ -452,6 +745,8 @@ def _label_small_inline(
     color_map: dict[str, str],
     cell_size: float,
     label_min_cells: int,
+    style: Optional[dict] = None,
+    labels: Optional[dict[str, str]] = None,
 ) -> None:
     """
     Add name annotations for inline regions that are too small to be
@@ -460,22 +755,27 @@ def _label_small_inline(
     These get a small italic label placed just above the cell with a
     pointing offset so it doesn't overlap the coloured square.
     """
+    st = resolve_style(style)
+    labels = labels or {}
+    fontsize = max(6.5, float(st["label_size"] or 0) * 0.75, float(st["label_min_size"]) * 0.9)
     for region_name, grp in cells_gdf.groupby("region_name"):
         if len(grp) >= label_min_cells:
             continue  # already handled by _plot_cells
+        text = labels.get(str(region_name), str(region_name))
+        if not text:
+            continue
         cx = float(grp["cx"].mean())
         cy = float(grp["cy"].mean())
-        bg = color_map.get(region_name, "#cccccc")
-        fg = _text_color(bg)
         ax.annotate(
-            region_name,
+            text,
             xy=(cx, cy),
             xytext=(cx + cell_size * 0.7, cy + cell_size * 1.1),
-            fontsize=5.5,
+            fontsize=fontsize,
             ha="left",
             va="bottom",
             fontstyle="italic",
-            color="#1A3829",
+            fontfamily=st["label_font"],
+            color=st["label_color"] or "#1A3829",
             zorder=5,
             arrowprops=dict(
                 arrowstyle="-",
@@ -622,6 +922,133 @@ def _group_panels_by_region(panel_lms: list[dict]) -> list[dict]:
     return result
 
 
+# ── Draw into an existing Axes ────────────────────────────────────────────────
+
+def _axes_size_in(ax: plt.Axes) -> tuple[float, float]:
+    """Width and height of ``ax`` in inches, from its figure-relative box."""
+    fig = ax.get_figure()
+    pos = ax.get_position()
+    return pos.width * fig.get_figwidth(), pos.height * fig.get_figheight()
+
+
+def _cell_points(ax: plt.Axes, data_w: float, data_h: float, cell_size: float) -> float:
+    """Visual size of one cell in points once ``data_w × data_h`` fills ``ax``."""
+    ax_w_in, ax_h_in = _axes_size_in(ax)
+    scale = min(ax_w_in / data_w, ax_h_in / data_h)   # inches per metre
+    return cell_size * scale * 72.0
+
+
+def draw_map(
+    ax: plt.Axes,
+    landmasses: list[dict],
+    color_map: dict[str, str],
+    cell_size: float,
+    scope: str = "islands",
+    show_labels: bool = True,
+    label_min_cells: int = 3,
+    background_style: str = "grid",
+    background_color: Optional[str] = None,
+    show_region_borders: bool = True,
+    style: Optional[dict] = None,
+    label_mode: str = "auto",
+    labels: Optional[dict[str, str]] = None,
+    set_limits: bool = True,
+) -> plt.Axes:
+    """
+    Draw the block map into a caller-supplied Matplotlib Axes.
+
+    This is what :meth:`AreaGrid.draw` and :meth:`PopGrid.draw` call. It
+    renders the main landmass plus any inline islands (``scope='islands'``),
+    or the main landmass alone (``scope='mainland'``). Distant territories
+    that :func:`create_figure` puts in panel insets are not drawn here, since a
+    single Axes has nowhere to put them; ``scope='all'`` is accepted and
+    behaves like ``'islands'``.
+
+    Parameters
+    ----------
+    ax:
+        Target Axes. Its aspect is set to ``'equal'`` and its axis turned off.
+    background_color:
+        Fill for the Axes patch. ``None`` leaves the Axes background untouched,
+        so the map sits on whatever the caller's figure already has.
+    style:
+        Visual overrides; see :data:`DEFAULT_STYLE` for the keys.
+    label_mode:
+        ``'auto'`` fits the full name, wraps it, or abbreviates it as space
+        allows; ``'full'`` never abbreviates; ``'short'`` always abbreviates;
+        ``'none'`` draws no labels.
+    labels:
+        ``{region_name: text}`` overrides. An empty string suppresses that
+        region's label.
+    set_limits:
+        Fit the Axes limits to the drawn cells. Pass ``False`` to manage them
+        yourself.
+
+    Returns
+    -------
+    The same Axes, for chaining.
+    """
+    if scope not in ("all", "islands", "mainland"):
+        raise ValueError(f"scope must be 'all', 'islands', or 'mainland'; got {scope!r}")
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}; got {label_mode!r}")
+    st = resolve_style(style)
+
+    main = landmasses[0]
+    secondary_raw = [lm for lm in landmasses[1:] if not lm["cells"].empty]
+    inline_lms, _panel_lms = _classify_secondary(main, secondary_raw, cell_size)
+    if scope == "mainland":
+        inline_lms = []
+
+    main_cells = main["cells"]
+    all_inline_cells = [main_cells] + [lm["cells"] for lm in inline_lms]
+    all_cx = np.concatenate([g["cx"].to_numpy() for g in all_inline_cells])
+    all_cy = np.concatenate([g["cy"].to_numpy() for g in all_inline_cells])
+
+    margin = cell_size * 1.2
+    data_w = (all_cx.max() - all_cx.min()) + 2 * margin
+    data_h = (all_cy.max() - all_cy.min()) + 2 * margin
+    cell_pts = _cell_points(ax, data_w, data_h, cell_size)
+    border_lw = float(np.clip(cell_pts * 0.08, 0.6, 2.0))
+
+    if background_color is not None:
+        ax.set_facecolor(background_color)
+    bg_for_grid = background_color or mcolors.to_hex(ax.get_facecolor())
+    ax.axis("off")
+
+    if background_style != "none":
+        _full_grid_background(
+            ax, all_cx, all_cy, cell_size, bg_for_grid,
+            style=background_style,
+            grid_color=st["grid_color"], grid_width=st["grid_width"],
+        )
+
+    common = dict(
+        show_labels=show_labels, set_limits=False,
+        background_style=background_style,
+        show_region_borders=show_region_borders, border_lw=border_lw,
+        style=st, label_mode=label_mode, labels=labels, cell_pts=cell_pts,
+    )
+    _plot_cells(ax, main_cells, color_map, cell_size,
+                label_min_cells=label_min_cells, **common)
+
+    inline_min = max(1, label_min_cells)
+    for lm in inline_lms:
+        _plot_cells(ax, lm["cells"], color_map, cell_size,
+                    label_min_cells=inline_min, **common)
+        # Leader-line labels for inline territories below the in-cell threshold
+        if show_labels and label_mode != "none":
+            _label_small_inline(
+                ax, lm["cells"], color_map, cell_size, inline_min,
+                style=st, labels=labels,
+            )
+
+    if set_limits:
+        _apply_limits(ax, all_inline_cells, cell_size)
+    ax.set_aspect("equal")
+    return ax
+
+
 # ── Public figure builder ─────────────────────────────────────────────────────
 
 def create_figure(
@@ -638,6 +1065,9 @@ def create_figure(
     background_style: str = "grid",
     show_region_borders: bool = True,
     data_source: Optional[str] = None,
+    style: Optional[dict] = None,
+    label_mode: str = "auto",
+    labels: Optional[dict[str, str]] = None,
 ) -> plt.Figure:
     """
     Build the complete matplotlib Figure.
@@ -654,10 +1084,13 @@ def create_figure(
         ``'solid'``  — solid colour rectangle, no grid lines.
         ``'none'``   — no background; plain figure background colour shows.
     show_region_borders:
-        Thick black outline around each region boundary.  Default True.
+        Outline around each region boundary.  Default True.
     data_source:
         Optional attribution string shown bottom-left.
+    style, label_mode, labels:
+        See :func:`draw_map`.
     """
+    st = resolve_style(style)
     main = landmasses[0]
     secondary_raw = [lm for lm in landmasses[1:] if not lm["cells"].empty]
 
@@ -771,36 +1204,14 @@ def create_figure(
 
     # ── Main axes ─────────────────────────────────────────────────────────────
     main_ax = fig.add_subplot(outer[1])
-    main_ax.set_facecolor(background_color)
-    main_ax.axis("off")
-
-    # Draw background ONCE for the full combined extent (main + inline islands)
-    if background_style != "none":
-        _full_grid_background(
-            main_ax, all_cx, all_cy, cell_size, background_color,
-            style=background_style,
-        )
-
-    _plot_cells(main_ax, main_cells, color_map, cell_size,
-                show_labels=show_labels, label_min_cells=label_min_cells,
-                set_limits=False, background_style=background_style,
-                show_region_borders=show_region_borders,
-                border_lw=_border_lw)
-
-    for lm in inline_lms:
-        _plot_cells(main_ax, lm["cells"], color_map, cell_size,
-                    show_labels=show_labels,
-                    label_min_cells=max(1, label_min_cells - 1),
-                    set_limits=False, background_style=background_style,
-                    show_region_borders=show_region_borders,
-                    border_lw=_border_lw)
-        # Add small annotated labels for single-cell inline territories
-        if show_labels:
-            _label_small_inline(
-                main_ax, lm["cells"], color_map, cell_size, label_min_cells
-            )
-
-    _apply_limits(main_ax, all_inline_cells, cell_size)
+    draw_map(
+        main_ax, landmasses, color_map, cell_size,
+        scope="mainland" if scope == "mainland" else "islands",
+        show_labels=show_labels, label_min_cells=label_min_cells,
+        background_style=background_style, background_color=background_color,
+        show_region_borders=show_region_borders,
+        style=st, label_mode=label_mode, labels=labels,
+    )
 
     # ── Panel row ─────────────────────────────────────────────────────────────
     if panel_lms:
@@ -835,6 +1246,7 @@ def create_figure(
                 _full_grid_background(
                     ax, panel_cx, panel_cy, cell_size, background_color,
                     style=background_style,
+                    grid_color=st["grid_color"], grid_width=st["grid_width"],
                 )
 
             # Labels go ABOVE the box — no need to repeat inside cells
@@ -846,6 +1258,7 @@ def create_figure(
                 background_style=background_style,
                 show_region_borders=show_region_borders,
                 border_lw=_border_lw,
+                style=st,
             )
 
             # ax.axis("off") inside _plot_cells sets an internal _axis_off flag

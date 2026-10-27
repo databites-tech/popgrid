@@ -87,6 +87,16 @@ def title_for(iso: str, mode: str, override: "str | None") -> "str | None":
 FOREST = "#1A3829"  # DataBites brand dark green, used for the arrow
 
 
+def style_from(args) -> dict:
+    """Collect the --edge-*/--grid-*/--label-* flags into a plot() style dict."""
+    return {
+        "edge_color": args.edge_color,
+        "edge_width": args.edge_width,
+        "grid_color": args.grid_color,
+        "label_size": args.label_size,
+    }
+
+
 def _build(GridClass, iso, args):
     grid = GridClass(
         iso, n=args.n, cluster_distance_km=args.cluster,
@@ -94,6 +104,90 @@ def _build(GridClass, iso, args):
     )
     grid.build()
     return grid
+
+
+def _build_from_gdf(GridClass, gdf, args):
+    kwargs = dict(
+        gdf=gdf, region_col=args.region_col, n=args.n,
+        cluster_distance_km=args.cluster, palette=resolve_palette(args.palette),
+    )
+    if GridClass is PopGrid:
+        kwargs["weight_col"] = args.weight_col
+    grid = GridClass.from_geodataframe(**kwargs)
+    grid.build()
+    return grid
+
+
+def load_data_gdf(path, region_col, bbox=None):
+    """Load a custom dataset and return a GeoDataFrame ready for
+    ``AreaGrid/PopGrid.from_geodataframe``.
+
+    Format is dispatched on file extension:
+
+    * ``.geojson`` / ``.json`` / ``.gpkg`` / ``.shp`` / ``.parquet``
+      Read directly with geopandas. Geometry is already in the file.
+    * ``.csv``
+      Read as a table and joined to Natural Earth 1:50m country borders on
+      ``region_col`` (typically ``iso3``). The shapefile is downloaded to
+      ``~/.popgrid/cache/`` on first use.
+
+    A bbox ``(lon_min, lat_min, lon_max, lat_max)`` clips the result.
+    """
+    import geopandas as gpd
+    from shapely.geometry import box as _box
+    from pathlib import Path
+
+    p = Path(path)
+    ext = p.suffix.lower()
+
+    if ext in {".geojson", ".json", ".gpkg", ".shp", ".parquet"}:
+        gdf = gpd.read_file(p) if ext != ".parquet" else gpd.read_parquet(p)
+        if region_col not in gdf.columns:
+            raise ValueError(
+                f"{p.name} missing region column {region_col!r}. "
+                f"Available: {list(gdf.columns)}"
+            )
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+    elif ext == ".csv":
+        import urllib.request
+        import pandas as pd
+        from popgrid.data import cache_dir
+
+        url = "https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_0_countries.zip"
+        zip_path = cache_dir() / "ne_50m_admin_0_countries.zip"
+        if not zip_path.exists() or zip_path.stat().st_size < 100_000:
+            req = urllib.request.Request(url, headers={"User-Agent": "popgrid"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                zip_path.write_bytes(resp.read())
+
+        df = pd.read_csv(p)
+        if region_col not in df.columns:
+            raise ValueError(
+                f"{p.name} missing region column {region_col!r}. "
+                f"Available: {list(df.columns)}"
+            )
+        world = gpd.read_file(f"zip://{zip_path}")
+        iso_src = next(
+            (c for c in ("ISO_A3_EH", "ADM0_A3", "ISO_A3") if c in world.columns), None,
+        )
+        if iso_src is None:
+            raise RuntimeError("No ISO3 column on Natural Earth countries.")
+        world = world.rename(columns={iso_src: region_col})
+        gdf = world.merge(df, on=region_col, how="inner")
+        missing = set(df[region_col]) - set(gdf[region_col])
+        if missing:
+            print(f"  WARNING: no geometry for {sorted(missing)}")
+    else:
+        raise ValueError(
+            f"Unsupported file type {ext!r}. Use .geojson, .gpkg, .shp, .parquet, or .csv."
+        )
+
+    if bbox is not None:
+        gdf = gpd.clip(gdf, _box(*bbox))
+        gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()].copy()
+
+    return gdf
 
 
 def _grid_to_image(grid, args):
@@ -109,6 +203,7 @@ def _grid_to_image(grid, args):
         show_labels=not args.no_labels, label_min_cells=args.label_min,
         background_color=args.bg, scope=args.scope,
         background_style=args.background, show_region_borders=not args.no_region_borders,
+        style=style_from(args), label_mode=args.label_mode,
     )
     # Biggest axes is the main map; measure one cell's pixel span there.
     ax = max(fig.axes, key=lambda a: a.get_position().width * a.get_position().height)
@@ -158,12 +253,22 @@ def compare_figure(iso, args):
     side — land area on the left, population on the right — at equal panel size
     and, crucially, the SAME block size, so a block in one map equals a block in
     the other. Region colours are identical across both (stable-colour feature).
+
+    ``iso`` may be either an ISO3 string (bundled country) or a GeoDataFrame
+    (custom dataset via ``--data``). When a GDF is passed, ``args.name`` is used
+    in the panel titles.
     """
     import matplotlib.pyplot as plt
+    import geopandas as gpd
 
-    name = country_name(iso)
-    ag = _build(AreaGrid, iso, args)
-    pg = _build(PopGrid, iso, args)
+    if isinstance(iso, gpd.GeoDataFrame):
+        name = args.name or "Custom Region"
+        ag = _build_from_gdf(AreaGrid, iso, args)
+        pg = _build_from_gdf(PopGrid, iso, args)
+    else:
+        name = country_name(iso)
+        ag = _build(AreaGrid, iso, args)
+        pg = _build(PopGrid, iso, args)
     img_area, cpa = _grid_to_image(ag, args)
     img_pop, cpp = _grid_to_image(pg, args)
 
@@ -235,6 +340,21 @@ def main() -> int:
     p.add_argument("--dissolve", default="auto", metavar="COLUMN",
                    help="Dissolve admin-1 by: auto | region | none (default: auto).")
 
+    # Data mode: build one map from a custom dataset (GeoJSON, shapefile,
+    # geopackage, parquet, or CSV+iso3). Bypasses the bundled-country loop.
+    p.add_argument("--data", default=None, metavar="PATH",
+                   help="Custom dataset: .geojson/.gpkg/.shp/.parquet (with "
+                        "geometry) or .csv (joined to Natural Earth countries "
+                        "on iso3). Mutually exclusive with positional ISO3 codes.")
+    p.add_argument("--region-col", default="iso3", metavar="COL",
+                   help="Column to use as the region label (default: iso3).")
+    p.add_argument("--weight-col", default="population", metavar="COL",
+                   help="Column to weight PopGrid by (default: population).")
+    p.add_argument("--bbox", default=None, metavar="LONMIN,LATMIN,LONMAX,LATMAX",
+                   help="Optional clip box in lon/lat, e.g. -11,34,35,71.5 for Europe.")
+    p.add_argument("--name", default=None, metavar="STR",
+                   help="Display name for the region in data mode (e.g. 'Europe').")
+
     # Plot options
     p.add_argument("--scope", default="all", choices=["all", "islands", "mainland"],
                    help="Landmasses to show (default: all).")
@@ -246,13 +366,26 @@ def main() -> int:
                         "(islands, enclaves like Ceuta/Melilla, Corsica, Sicily) "
                         "but drop the distant panel insets. Shorthand for "
                         "--scope islands.")
-    p.add_argument("--no-labels", action="store_true", help="Hide region labels.")
+    p.add_argument("--no-labels", action="store_true",
+                   help="Hide region labels (same as --label-mode none).")
     p.add_argument("--label-min", type=int, default=3, metavar="N",
                    help="Min cells for a region label (default: 3).")
     p.add_argument("--bg", default="#FAF6F0", metavar="HEX",
                    help="Background colour (default: #FAF6F0).")
     p.add_argument("--background", default="grid", choices=["grid", "solid", "none"],
                    help="Background style (default: grid).")
+    p.add_argument("--edge-color", default=None, metavar="HEX",
+                   help="Region outline colour (default: black).")
+    p.add_argument("--edge-width", type=float, default=None, metavar="PT",
+                   help="Region outline width in points (default: auto).")
+    p.add_argument("--grid-color", default=None, metavar="HEX",
+                   help="Background grid colour (default: auto).")
+    p.add_argument("--label-size", type=float, default=None, metavar="PT",
+                   help="Fixed label size in points (default: fit each region).")
+    p.add_argument("--label-mode", default="auto",
+                   choices=["auto", "full", "short", "none"],
+                   help="auto: fit, wrap or abbreviate per region (default); "
+                        "full: never abbreviate; short: always abbreviate; none: no labels.")
     p.add_argument("--no-region-borders", action="store_true",
                    help="Disable region outlines (on by default).")
     p.add_argument("--source", default=None, metavar="STR",
@@ -279,14 +412,62 @@ def main() -> int:
 
     palette = resolve_palette(args.palette)
     dissolve = resolve_dissolve(args.dissolve)
-    codes = resolve_codes(args.countries)
 
     if not args.show:
         os.makedirs(args.out, exist_ok=True)
-    print(f"Generating {len(codes)} {args.mode} map(s) at n={args.n}"
-          + ("" if args.show else f" → {args.out}/") + "\n")
 
     import matplotlib.pyplot as plt
+
+    # Data mode: one figure from a custom GeoDataFrame, then exit.
+    if args.data:
+        if args.countries:
+            print("WARNING: positional ISO3 codes are ignored in --data mode.")
+        bbox = None
+        if args.bbox:
+            bbox = tuple(float(x) for x in args.bbox.split(","))
+            if len(bbox) != 4:
+                print("ERROR: --bbox must be LONMIN,LATMIN,LONMAX,LATMAX")
+                return 1
+        print(f"Loading {args.data}...")
+        gdf = load_data_gdf(args.data, region_col=args.region_col, bbox=bbox)
+        print(f"  {len(gdf)} regions after load/clip")
+        stem = args.name.lower().replace(" ", "_") if args.name else "custom"
+
+        if args.mode == "compare":
+            fig, ag, pg = compare_figure(gdf, args)
+            blocks = f"{ag.total_cells}/{pg.total_cells}"
+        else:
+            GridClass = PopGrid if args.mode == "pop" else AreaGrid
+            grid = _build_from_gdf(GridClass, gdf, args)
+            display = args.name or "Custom Region"
+            title = args.title or (
+                f"Population of {display}" if args.mode == "pop"
+                else f"Land Area of {display}"
+            )
+            fig = grid.plot(
+                title=title, subtitle=args.subtitle,
+                show_labels=not args.no_labels, label_min_cells=args.label_min,
+                background_color=args.bg, scope=args.scope,
+                background_style=args.background,
+                show_region_borders=not args.no_region_borders,
+                data_source=args.source,
+            )
+            blocks = str(grid.total_cells)
+
+        if args.show:
+            print(f"  {stem}: {blocks} blocks (showing)")
+            plt.show()
+        else:
+            path = os.path.join(args.out, f"{stem}_{args.mode}.png")
+            fig.savefig(path, dpi=args.dpi, bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            plt.close(fig)
+            print(f"  {stem}: {blocks} blocks → {path}")
+        return 0
+
+    codes = resolve_codes(args.countries)
+    print(f"Generating {len(codes)} {args.mode} map(s) at n={args.n}"
+          + ("" if args.show else f" → {args.out}/") + "\n")
 
     ok: list[str] = []
     failed: list[str] = []
@@ -312,6 +493,8 @@ def main() -> int:
                     background_style=args.background,
                     show_region_borders=not args.no_region_borders,
                     data_source=args.source,
+                    style=style_from(args),
+                    label_mode=args.label_mode,
                 )
                 blocks = str(grid.total_cells)
 

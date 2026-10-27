@@ -82,6 +82,55 @@ A full runnable version is in [`examples/barcelona.py`](examples/barcelona.py), 
 
 ---
 
+## Use with matplotlib
+
+`.plot()` gives you a finished figure. `.draw(ax)` gives you just the map, inside an Axes you already own, so popgrid fits into any layout: a row of countries, a map beside a chart, your own title block.
+
+```python
+import matplotlib.pyplot as plt
+from popgrid import AreaGrid, PopGrid
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+AreaGrid("ESP").draw(ax1, background_style="none")
+PopGrid("ESP").draw(ax2, background_style="none")
+ax1.set_title("Land area")
+ax2.set_title("Population")
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_subplots.png" width="100%" alt="Spain drawn into two matplotlib subplots">
+</p>
+
+`draw` returns the Axes, sets its aspect to equal and turns the axis off. It draws the main landmass and nearby islands; distant territories (Canary Islands, Hawaii, overseas France) need their own Axes, which is what `plot()` arranges for you.
+
+### Styling
+
+Both `plot()` and `draw()` take a `style` dict. Leave a key out and it keeps its automatic value.
+
+| Key | Default | What it controls |
+|---|---|---|
+| `edge_color` | `#000000` | Region outline colour |
+| `edge_width` | auto | Outline width in points (auto: 8% of a block) |
+| `grid_color` | auto | Background grid lines or tiles |
+| `grid_width` | `0.35` | Grid line width in points |
+| `cell_gap` | auto | Gap between blocks, as a fraction of a block |
+| `label_color` | auto | Label text colour (auto: black or white by region luminance) |
+| `label_size` | auto | Fixed label size in points (auto: fit each region) |
+| `label_min_size`, `label_max_size` | `7`, `18` | Bounds for auto-fitted labels |
+| `label_weight`, `label_font` | `bold`, default | Label font |
+
+```python
+PopGrid("DEU", color_map={"Bayern": "#1A3829"}).plot(
+    style={"edge_color": "#1A3829", "edge_width": 1.0, "label_max_size": 22},
+    label_mode="auto",
+    labels={"Baden-Württemberg": "BaWü"},
+)
+```
+
+`color_map` pins regions to colours; the rest keep their automatic, adjacency-aware palette colour. `label_mode` is `auto` (fit the full name, else wrap it on two lines, else abbreviate), `full`, `short` or `none`. `labels` overrides individual names; an empty string hides one.
+
+---
+
 ## Command line
 
 `generate.py` (at the repo root) renders one or many countries from the terminal.
@@ -103,7 +152,7 @@ python generate.py ESP DEU FRA --mode compare --out compare/
 python generate.py ALL --mode pop
 ```
 
-Useful flags: `--n` (target block count, default 1000), `--mainland` (drop detached territories), `--no-panels` (keep nearby islands inline, drop distant panels), `--palette`, `--dissolve`, `--no-labels`, `--bg`, `--background grid|solid|none`, `--title`, `--subtitle`, `--source`, `--dpi`, `--out`. Run `python generate.py --help` for the full list.
+Useful flags: `--n` (target block count, default 1000), `--mainland` (drop detached territories), `--no-panels` (keep nearby islands inline, drop distant panels), `--palette`, `--dissolve`, `--label-mode auto|full|short|none`, `--label-size`, `--edge-color`, `--edge-width`, `--grid-color`, `--bg`, `--background grid|solid|none`, `--title`, `--subtitle`, `--source`, `--dpi`, `--out`. Run `python generate.py --help` for the full list.
 
 ---
 
