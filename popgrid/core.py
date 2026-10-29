@@ -375,6 +375,7 @@ class AreaGrid:
         self._cell_size: Optional[float] = None
         self._color_map: Optional[dict[str, str]] = None
         self._built: bool = False
+        self._quotas: Optional[dict[str, int]] = None
 
     # ── Build pipeline ────────────────────────────────────────────────────────
 
@@ -534,6 +535,29 @@ class AreaGrid:
         """``{region_name: hex_color}`` mapping used in the plot."""
         self._ensure_built()
         return self._color_map  # type: ignore[return-value]
+
+    @property
+    def block_counts(self) -> dict[str, int]:
+        """``{region_name: blocks}`` as built, largest first."""
+        self._ensure_built()
+        from collections import Counter
+        counts: Counter = Counter()
+        for lm in self._landmasses or []:
+            if not lm["cells"].empty:
+                counts.update(lm["cells"]["region_name"])
+        return dict(counts.most_common())
+
+    @property
+    def quotas(self) -> dict[str, int]:
+        """
+        ``{region_name: target blocks}`` from the Hamilton allocation.
+
+        Only population maps allocate quotas; for an :class:`AreaGrid` the
+        block counts are whatever the real geography rasterises to, so this
+        returns :attr:`block_counts`.
+        """
+        self._ensure_built()
+        return dict(self._quotas) if self._quotas is not None else self.block_counts
 
     # ── Visualisation ─────────────────────────────────────────────────────────
 
@@ -1068,7 +1092,7 @@ class PopGrid(AreaGrid):
         """
         from .cartogram import (
             dougenik_cartogram, scale_to_area, fit_quota,
-            real_adjacency, enforce_topology, fill_gaps,
+            real_adjacency, enforce_topology, fill_gaps, repair_quotas,
         )
 
         # ── 1. Load regions ────────────────────────────────────────────────
@@ -1169,6 +1193,7 @@ class PopGrid(AreaGrid):
             for name in region_names
         }
         quotas = _hamilton_quotas(raw_quotas, self.n)
+        self._quotas = dict(quotas)
 
         # Drop regions that round to zero blocks (e.g. tiny disputed reefs like
         # Paracel Islands at 1,000 people).  They can never be drawn, and their
@@ -1283,6 +1308,11 @@ class PopGrid(AreaGrid):
             radj = real_adjacency(self._regions_proj)
             all_cells = enforce_topology(all_cells, radj, quotas, self._cell_size)
             all_cells = fill_gaps(all_cells, self._cell_size, quotas=quotas)
+            # The three steps above only adjust counts where a region touches
+            # empty space; enclosed regions (La Rioja, Zug) keep whatever count
+            # the layout gave them. Repair every region to its exact quota by
+            # passing cells through chains of real neighbours (issue #3).
+            all_cells = repair_quotas(all_cells, quotas, self._cell_size, radj)
             # Re-anchor detached territories to the *deformed* mainland frame so
             # they keep their geographic bearing relative to the cartogram (this
             # is why an enclave like Melilla must not drift into a panel).

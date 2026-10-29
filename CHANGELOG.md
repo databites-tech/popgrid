@@ -2,7 +2,44 @@
 
 All notable changes to popgrid are documented here.
 
-## [0.6.0] - Unreleased
+## [0.6.1] - 2026-10-29
+
+Every region gets its blocks, including the ones nobody can reach.
+
+### Fixed
+- **Regions enclosed by other regions now hit their quota** (#3, reported by
+  @jgomezsa). Quota fitting only added or removed blocks where a region
+  touched empty space, so a region surrounded on all sides kept whatever
+  count the cartogram layout gave it: La Rioja drew 2 blocks for a quota of
+  7, Zug 26 for 15, Tucumán 33 for 38. A new final pass,
+  `cartogram.repair_quotas`, moves blocks one at a time along chains of
+  real neighbours (a region with too many passes a block to a neighbour,
+  which passes one on, until it reaches a region with too few or the outer
+  edge). Every move keeps each region in one piece, never opens a hole,
+  never creates or lengthens a border between regions that are not
+  neighbours in reality, and never erases one that is.
+- Regions that the layout squeezed out entirely (Goa in India, for example)
+  are seeded next to their real neighbours and grown to their quota.
+- Totals now land on `n`: Spain, Switzerland, Germany, France, Italy,
+  Sweden, the UK, China and India all draw exactly 1000 blocks with every
+  region at its quota.
+
+### Added
+- **`PopGrid.quotas`**: the block quota each region was allocated.
+- **`block_counts`** on both classes: the blocks each region actually drew.
+  Compare the two to see exactly how faithful a map is.
+
+### Known limits
+- A region that is the only thing keeping two non-neighbours apart can stay
+  a block or two over quota, because correct borders win over the last
+  blocks (La Pampa in Argentina, 10 for 8).
+- Hungary's 23 cities with county rights are separate Natural Earth regions,
+  and a few end up as one-block rings that cannot be repaired. Egypt's
+  layout is broken upstream of this pass. Both are tracked separately.
+- `AreaGrid` rasterises real geography and is not repaired; its counts can
+  still be a few blocks off.
+
+## [0.6.0] - 2026-10-27
 
 Every country. popgrid no longer depends on a hand-maintained population
 table for the countries it can draw.

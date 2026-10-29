@@ -235,7 +235,7 @@ For sub-national data such as cities, or to use your own population numbers, use
 
 - **Population currency.** Bundled population figures are a fixed snapshot, not live data. For up-to-date or custom numbers, pass your own values through `PopGrid.from_geodataframe(..., weight_col=...)`.
 - **Disputed borders.** Natural Earth draws them its own way (Kashmir, Crimea, Western Sahara). Check before publishing a map of a contested region.
-- Block counts land close to `n` but not always exactly, because of quota rounding and edge fitting (e.g. 984 or 1018 rather than 1000).
+- **Exact counts.** Population maps draw every region at its exact quota (`grid.quotas` vs `grid.block_counts`). The rare exception is a region that is the only barrier between two regions that are not neighbours; it may keep a block or two extra so the map never shows a border that does not exist. Land-area maps rasterise real geography and can be a few blocks off `n`.
 
 ---
 

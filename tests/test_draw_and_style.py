@@ -291,3 +291,34 @@ def test_display_names_apply_to_labels():
     assert texts & {"Baleares", "BAL"}
     assert not texts & {"Islas Baleares", "IB"}
     plt.close(fig)
+
+
+# ── every region drawn ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("iso", ["GBR", "ESP", "DNK", "GRC"])
+def test_every_region_with_blocks_is_drawn(iso):
+    """
+    A region that earned blocks must appear on the figure. Single-cell islets
+    of a mainland region are filtered on purpose, so a region may lose a few
+    blocks to that filter, never all of them.
+    """
+    import numpy as np
+    import pandas as pd
+    import matplotlib.colors as mc
+    ag = AreaGrid(iso, n=400)
+    ag.build()
+    cells = pd.concat([lm["cells"] for lm in ag._landmasses if not lm["cells"].empty])
+    fig = ag.plot(show_labels=False)
+    drawn = []
+    for ax in fig.axes:
+        for col in ax.collections:
+            fcs = col.get_facecolors()
+            if len(fcs):
+                drawn.append(fcs[:, :3])
+    drawn = np.concatenate(drawn)
+    for region, n in cells["region_name"].value_counts().items():
+        rgb = np.array(mc.to_rgb(ag.color_map[region]))
+        hits = int(np.all(np.isclose(drawn, rgb, atol=0.01), axis=1).sum())
+        assert hits > 0, f"{iso}: {region} has {n} blocks but none drawn"
+        assert n - hits <= 4, f"{iso}: {region} has {n} blocks but only {hits} drawn"
+    plt.close(fig)

@@ -761,6 +761,458 @@ def fill_gaps(
     return gpd.GeoDataFrame(pd.concat(out_frames, ignore_index=True), crs=cells.crs)
 
 
+# ── Quota repair (final pass) ─────────────────────────────────────────────────
+#
+# Why this exists (issue #3)
+# --------------------------
+# fit_quota, enforce_topology and fill_gaps can only change a region's block
+# count where the region touches empty space: they trim cells next to the
+# outside and grow into the outside. A region that ends up fully surrounded by
+# other regions has no such cell, so it keeps whatever count the layout gave it.
+# La Rioja (quota 7) came out with 2, Zug (quota 15) with 26, and country
+# totals drifted to 969 or 1,045 instead of 1,000.
+#
+# How it works
+# ------------
+# Cells are moved one at a time through CHAINS of neighbouring regions:
+#
+# * surplus region S, deficit region D, connected through regions R1..Rk:
+#   S gives one cell to R1, R1 gives one to R2, ..., Rk gives one to D.
+#   S -1, D +1, everyone in between unchanged, outline untouched.
+# * surplus with no deficit left to pair with: the chain runs to a region on
+#   the outer edge, which drops one outer cell.
+# * deficit with no surplus left: an edge region adds one outer cell and the
+#   chain passes cells inward to D.
+#
+# Every single move must keep the map honest:
+# * only between regions that really border each other (real_adjacency);
+#   no move may create a border that doesn't exist or erase one that does;
+# * the giving region stays in one piece, and so does the landmass;
+# * "outside" means empty cells reachable by flood fill from beyond the
+#   bounding box. Cells next to an enclosed hole are never dropped (that would
+#   grow the hole) and no added cell may seal off part of the outside.
+# * Cell choice keeps shapes compact: a region gives away the cell touching the
+#   receiver most, farthest from its own centroid; an edge region drops its most
+#   exposed outer cell; an added cell goes into the deepest concavity, closest
+#   to the region's centroid.
+# Each accepted move strictly reduces the total quota error, so the loop ends.
+
+_N4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def _n4(c):
+    i, j = c
+    return ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1))
+
+
+def _exterior(grid: dict) -> set:
+    """Empty lattice cells reachable from outside the padded bounding box."""
+    if not grid:
+        return set()
+    iis = [k[0] for k in grid]
+    jjs = [k[1] for k in grid]
+    imin, imax = min(iis) - 1, max(iis) + 1
+    jmin, jmax = min(jjs) - 1, max(jjs) + 1
+    seen: set = set()
+    stack = [(i, j) for i in range(imin, imax + 1) for j in (jmin, jmax)]
+    stack += [(i, j) for j in range(jmin, jmax + 1) for i in (imin, imax)]
+    while stack:
+        c = stack.pop()
+        if c in seen or c in grid:
+            continue
+        i, j = c
+        if not (imin <= i <= imax and jmin <= j <= jmax):
+            continue
+        seen.add(c)
+        stack.extend(_n4(c))
+    return seen
+
+
+def _connected_without(cells_set: set, c) -> bool:
+    """Do ``c``'s 4-neighbours inside ``cells_set`` stay connected once ``c`` is removed?"""
+    nbs = [d for d in _n4(c) if d in cells_set]
+    if len(nbs) <= 1:
+        return True
+    target = set(nbs)
+    seen = {nbs[0]}
+    stack = [nbs[0]]
+    found = 1
+    while stack:
+        cur = stack.pop()
+        for d in _n4(cur):
+            if d == c or d in seen or d not in cells_set:
+                continue
+            seen.add(d)
+            if d in target:
+                found += 1
+                if found == len(target):
+                    return True
+            stack.append(d)
+    return found == len(target)
+
+
+class _Ctx:
+    """Per-landmass snapshot used to score and validate moves."""
+
+    def __init__(self, grid: dict):
+        from collections import Counter, defaultdict
+
+        self.cells_of: dict = defaultdict(set)
+        for k, r in grid.items():
+            self.cells_of[r].add(k)
+        self.centroid = {
+            r: (sum(k[0] for k in ks) / len(ks), sum(k[1] for k in ks) / len(ks))
+            for r, ks in self.cells_of.items()
+        }
+        self.contacts: Counter = Counter()
+        for k, a in grid.items():
+            for d in ((k[0] + 1, k[1]), (k[0], k[1] + 1)):
+                b = grid.get(d)
+                if b is not None and b != a:
+                    self.contacts[frozenset((a, b))] += 1
+        self.exterior = _exterior(grid)
+        self.occupied = set(grid)
+
+
+def repair_quotas(
+    cells: gpd.GeoDataFrame,
+    quotas: dict[str, int],
+    cell_size: float,
+    real_adj: dict[str, set] | None = None,
+    max_moves: int | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Bring every region to exactly its quota, including regions fully enclosed
+    by others, by moving single cells through chains of neighbouring regions.
+
+    Runs after :func:`fill_gaps`. See the block comment above for the method.
+    Regions without a quota entry are left as they are. Returns a new
+    GeoDataFrame with the same columns.
+    """
+    import pandas as pd
+    from collections import Counter, deque
+
+    if cells is None or cells.empty or not quotas:
+        return cells
+    real_adj = real_adj or {}
+
+    def legal(a, b) -> bool:
+        if a == b or not real_adj or a not in real_adj or b not in real_adj:
+            return True
+        return b in real_adj[a]
+
+    # ── Lattice per landmass ──────────────────────────────────────────────────
+    grids: dict = {}
+    origins: dict = {}
+    region_id_of: dict = {}
+    for lm_id, g in cells.groupby("landmass_id"):
+        minx = float(g["cx"].min())
+        miny = float(g["cy"].min())
+        origins[lm_id] = (minx, miny)
+        grid: dict = {}
+        for cx, cy, name, rid in zip(g["cx"].to_numpy(), g["cy"].to_numpy(),
+                                     g["region_name"], g["region_id"]):
+            grid[(int(round((cx - minx) / cell_size)),
+                  int(round((cy - miny) / cell_size)))] = name
+            region_id_of[name] = rid
+        grids[lm_id] = grid
+
+    per_lm = {lm: Counter(g.values()) for lm, g in grids.items()}
+    home = {r: max(per_lm, key=lambda lm: per_lm[lm].get(r, 0))
+            for c in per_lm.values() for r in c}
+
+    def total_counts() -> Counter:
+        out: Counter = Counter()
+        for g in grids.values():
+            out.update(g.values())
+        return out
+
+    # ── Move validity ─────────────────────────────────────────────────────────
+    def topology_ok(grid, ctx, c, old, new) -> bool:
+        delta: Counter = Counter()
+        for d in _n4(c):
+            z = grid.get(d)
+            if z is None:
+                continue
+            if old is not None and z != old:
+                delta[frozenset((old, z))] -= 1
+            if new is not None and z != new:
+                delta[frozenset((new, z))] += 1
+        for pair, dv in delta.items():
+            if dv == 0:
+                continue
+            before = ctx.contacts.get(pair, 0)
+            after = before + dv
+            a, b = tuple(pair)
+            if before > 0 and after <= 0 and legal(a, b):
+                return False      # would erase a border that really exists
+            if dv > 0 and not legal(a, b):
+                return False      # would create or lengthen a border that doesn't exist
+        return True
+
+    def best_transfer(grid, ctx, X, Y):
+        xs = ctx.cells_of.get(X, set())
+        if len(xs) <= 1:
+            return None
+        cx, cy = ctx.centroid[X]
+        cands = []
+        for c in xs:
+            n_y = sum(1 for d in _n4(c) if grid.get(d) == Y)
+            if n_y:
+                # Combined perimeter of X and Y changes by 2·(n_x − n_y): give
+                # away cells that stick out of X and tuck into Y, so regions
+                # that only relay a cell along a chain keep their shape.
+                n_x = sum(1 for d in _n4(c) if grid.get(d) == X)
+                dist = (c[0] - cx) ** 2 + (c[1] - cy) ** 2
+                cands.append(((n_y - n_x, dist, c), c))
+        cands.sort(reverse=True)
+        for _, c in cands:
+            if topology_ok(grid, ctx, c, X, Y) and _connected_without(xs, c):
+                return c
+        return None
+
+    def best_drop(grid, ctx, E):
+        es = ctx.cells_of.get(E, set())
+        if len(es) <= 1:
+            return None
+        cx, cy = ctx.centroid[E]
+        cands = []
+        for c in es:
+            n_out = sum(1 for d in _n4(c) if d in ctx.exterior)
+            if n_out:
+                cands.append(((n_out, (c[0] - cx) ** 2 + (c[1] - cy) ** 2, c), c))
+        cands.sort(reverse=True)
+        for _, c in cands:
+            if (topology_ok(grid, ctx, c, E, None)
+                    and _connected_without(es, c)
+                    and _connected_without(ctx.occupied, c)):
+                return c
+        return None
+
+    def seals_outside(grid, ctx, e) -> bool:
+        grid[e] = "__probe__"
+        ext = _exterior(grid)
+        del grid[e]
+        return any(d in ctx.exterior and d not in ext for d in _n4(e))
+
+    def best_add(grid, ctx, Y):
+        ys = ctx.cells_of.get(Y, set())
+        if not ys:
+            return None
+        cx, cy = ctx.centroid[Y]
+        empties = {d for c in ys for d in _n4(c) if d not in grid}
+        cands = []
+        for e in empties:
+            n_occ = sum(1 for d in _n4(e) if d in grid)
+            n_y = sum(1 for d in _n4(e) if grid.get(d) == Y)
+            enclosed = e not in ctx.exterior     # filling a hole beats growing outward
+            score = (enclosed, n_occ, n_y, -((e[0] - cx) ** 2 + (e[1] - cy) ** 2), e)
+            cands.append((score, e))
+        cands.sort(reverse=True)
+        for _, e in cands:
+            if topology_ok(grid, ctx, e, None, Y) and not seals_outside(grid, ctx, e):
+                return e
+        return None
+
+    # ── Chain search (BFS over the region graph of one landmass) ─────────────
+    def neighbours_of(ctx, R):
+        out = []
+        for pair in ctx.contacts:
+            if R in pair:
+                (other,) = tuple(pair - {R})
+                out.append(other)
+        return sorted(out)
+
+    def path_forward(grid, ctx, S, is_target):
+        """S -> ... -> T where each step is a valid one-cell transfer."""
+        if is_target(S):
+            return [S]
+        parent = {S: None}
+        q = deque([S])
+        while q:
+            X = q.popleft()
+            for Y in neighbours_of(ctx, X):
+                if Y in parent or best_transfer(grid, ctx, X, Y) is None:
+                    continue
+                parent[Y] = X
+                if is_target(Y):
+                    path = [Y]
+                    while parent[path[-1]] is not None:
+                        path.append(parent[path[-1]])
+                    return path[::-1]
+                q.append(Y)
+        return None
+
+    def path_backward(grid, ctx, D, is_source):
+        """E -> ... -> D, returned as [D, ..., E]."""
+        if is_source(D):
+            return [D]
+        parent = {D: None}
+        q = deque([D])
+        while q:
+            Y = q.popleft()
+            for X in neighbours_of(ctx, Y):
+                if X in parent or best_transfer(grid, ctx, X, Y) is None:
+                    continue
+                parent[X] = Y
+                if is_source(X):
+                    path = [X]
+                    while parent[path[-1]] is not None:
+                        path.append(parent[path[-1]])
+                    return path[::-1]
+                q.append(X)
+        return None
+
+    # ── Execution with rollback ───────────────────────────────────────────────
+    def run(grid, steps) -> bool:
+        snapshot = dict(grid)
+        for kind, a, b in steps:
+            ctx = _Ctx(grid)
+            if kind == "transfer":
+                c = best_transfer(grid, ctx, a, b)
+                if c is None:
+                    break
+                grid[c] = b
+            elif kind == "drop":
+                c = best_drop(grid, ctx, a)
+                if c is None:
+                    break
+                del grid[c]
+            else:  # add
+                e = best_add(grid, ctx, a)
+                if e is None:
+                    break
+                grid[e] = a
+        else:
+            return True
+        grid.clear()
+        grid.update(snapshot)
+        return False
+
+    # ── Seed regions the layout lost entirely ─────────────────────────────────
+    # A region with a quota but no cells (small, dense, squeezed out during the
+    # deformation: Goa, Chandigarh) can't grow through chains. Give it one cell
+    # taken from a real neighbour, at the spot that touches the most of its
+    # other real neighbours, i.e. where it sits between them geographically.
+    counts = total_counts()
+    for D in sorted(r for r, q in quotas.items() if int(q) > 0 and counts.get(r, 0) == 0):
+        nbrs_D = real_adj.get(D, set())
+        if not nbrs_D:
+            continue
+        best = None
+        for lm_id, grid in grids.items():
+            ctx = None
+            for c, N in grid.items():
+                if N not in nbrs_D:
+                    continue
+                around = {grid.get((c[0] + di, c[1] + dj))
+                          for di in (-1, 0, 1) for dj in (-1, 0, 1)}
+                touch = len((around - {None, N}) & nbrs_D) + 1
+                spare = counts.get(N, 0) - int(quotas.get(N, 0))
+                score = (touch, spare, c)
+                if best is not None and score <= best[0]:
+                    continue
+                ctx = ctx or _Ctx(grid)
+                if (len(ctx.cells_of[N]) > 1 and topology_ok(grid, ctx, c, N, D)
+                        and _connected_without(ctx.cells_of[N], c)):
+                    best = (score, lm_id, c, N)
+        if best is not None:
+            _, lm_id, c, N = best
+            grids[lm_id][c] = D
+            home[D] = lm_id
+            region_id_of.setdefault(D, region_id_of.get(N))
+            counts = total_counts()
+            logger.debug("repair_quotas: seeded %r in a cell of %r", D, N)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    counts = total_counts()
+    err = {r: counts.get(r, 0) - int(q) for r, q in quotas.items() if r in home}
+    limit = max_moves if max_moves is not None else 4 * sum(abs(e) for e in err.values()) + 20
+    moves = 0
+    while moves < limit:
+        counts = total_counts()
+        err = {r: counts.get(r, 0) - int(q) for r, q in quotas.items() if r in home}
+        surplus = sorted((r for r, e in err.items() if e > 0), key=lambda r: (-err[r], r))
+        deficit = sorted((r for r, e in err.items() if e < 0), key=lambda r: (err[r], r))
+        if not surplus and not deficit:
+            break
+        done = False
+
+        # 1. surplus -> deficit through neighbours (outline untouched)
+        for S in surplus:
+            grid = grids[home[S]]
+            ctx = _Ctx(grid)
+            def_here = {D for D in deficit if home[D] == home[S]}
+            if not def_here:
+                continue
+            path = path_forward(grid, ctx, S, lambda R: R in def_here)
+            if path and run(grid, [("transfer", path[i], path[i + 1])
+                                   for i in range(len(path) - 1)]):
+                done = True
+                break
+
+        # 2. surplus -> outer edge
+        if not done:
+            for S in surplus:
+                grid = grids[home[S]]
+                ctx = _Ctx(grid)
+                path = path_forward(grid, ctx, S,
+                                    lambda R, g=grid, c=ctx: best_drop(g, c, R) is not None)
+                if path and run(grid, [("transfer", path[i], path[i + 1])
+                                       for i in range(len(path) - 1)]
+                                + [("drop", path[-1], None)]):
+                    done = True
+                    break
+
+        # 3. outer edge -> deficit
+        if not done:
+            for D in deficit:
+                grid = grids[home[D]]
+                ctx = _Ctx(grid)
+                path = path_backward(grid, ctx, D,
+                                     lambda R, g=grid, c=ctx: best_add(g, c, R) is not None)
+                if path and run(grid, [("add", path[-1], None)]
+                                + [("transfer", path[i], path[i - 1])
+                                   for i in range(len(path) - 1, 0, -1)]):
+                    done = True
+                    break
+
+        if not done:
+            break
+        moves += 1
+
+    counts = total_counts()
+    left = {r: counts.get(r, 0) - int(q) for r, q in quotas.items()
+            if r in home and counts.get(r, 0) != int(q)}
+    if left:
+        logger.info("repair_quotas: %d move(s); still off: %s", moves, left)
+    else:
+        logger.debug("repair_quotas: %d move(s); every region at quota", moves)
+
+    # ── Rebuild ──────────────────────────────────────────────────────────────
+    half = cell_size / 2.0
+    frames = []
+    for lm_id, grid in grids.items():
+        if not grid:
+            continue
+        minx, miny = origins[lm_id]
+        keys = list(grid)
+        cx = np.array([minx + k[0] * cell_size for k in keys])
+        cy = np.array([miny + k[1] * cell_size for k in keys])
+        names = [grid[k] for k in keys]
+        frames.append(gpd.GeoDataFrame(
+            {"cx": cx, "cy": cy,
+             "region_id": [region_id_of[n] for n in names],
+             "region_name": names,
+             "landmass_id": [lm_id] * len(keys)},
+            geometry=shapely.box(cx - half, cy - half, cx + half, cy + half),
+            crs=cells.crs,
+        ))
+    if not frames:
+        return cells.iloc[:0].copy()
+    return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=cells.crs)
+
+
 # ── Diffusion cartogram (Gastner & Newman, 2004) ─────────────────────────────
 #
 # Why a second engine
