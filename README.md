@@ -239,6 +239,21 @@ For sub-national data such as cities, or to use your own population numbers, use
 
 ---
 
+## Made with popgrid
+
+Blocks don't have to be people. Any number that adds up across regions works.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/showcase_germany_companies.png" width="70%" alt="German states by area vs active companies in the commercial register">
+</p>
+
+**Companies in the German commercial register, by state**, by [Julius Maneth](https://www.linkedin.com/in/juliusmaneth/) at [business.watch](https://www.business.watch). Every block is 0.1% of 2.35 million active firms. Hamburg and Berlin swell far beyond their land.
+
+Built something with popgrid? Share it in [Show and tell](https://github.com/databites-tech/popgrid/discussions/categories/show-and-tell) and it may end up here.
+
+
+---
+
 ## Data sources
 
 - Country and admin-1 boundaries: [Natural Earth](https://www.naturalearthdata.com/) (`ne_10m_admin_1_states_provinces`), public domain.
