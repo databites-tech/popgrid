@@ -2,6 +2,48 @@
 
 All notable changes to popgrid are documented here.
 
+## [0.7.0] - 2026-10-30
+
+Blocks can count money now, and islands stay off the mainland.
+
+### Added
+- **GDP maps.** `PopGrid("ESP", by="gdp")` sizes regions by GDP (PPP, 2024)
+  instead of population; `python generate.py ESP --mode gdp` on the command
+  line. Regional GDP for every country ships in `resources/gdp.csv`, summed
+  from the Kummu et al. gridded GDP dataset (CC BY 4.0) with
+  `scripts/build_gdp.py`. `popgrid.data.gdp_quality(iso3)` tells you whether a
+  country's regional GDP is `"reported"` (official regional accounts, 89
+  countries) or `"modelled"` (national GDP only; the regional split is an
+  estimate that closely follows population). The CLI prints a note for the
+  latter.
+- `popgrid.data.VARIABLES` lists what `by=` accepts; `load_region_values`
+  is the loader behind it.
+
+### Fixed
+- **Separate lands stay separate.** Detached landmasses are placed relative
+  to the deformed mainland, and when the mainland's population cartogram
+  bulged over that spot the island was drawn inside it (Northern Ireland
+  ended up inside Great Britain; Hainan merged into Guangdong). After every
+  block is on the lattice, a landmass whose blocks touch another's is now
+  pushed outward along its real geographic bearing until a clear gap
+  remains. Of the 24 curated countries plus Europe, 7 were affected by
+  population (China, Spain, UK, Canada, Japan, Sweden, Turkey); none is now.
+  Land maps are unaffected, since they do not deform.
+
+The layout pipeline is otherwise unchanged from 0.6.2: population maps come
+out as before, and GDP maps go through the same steps.
+
+### Added (colours)
+- **`color_mode="layouts"`** on `AreaGrid` and `PopGrid`: colours chosen with
+  every layout in mind. A region's weight is its largest share of land,
+  people or GDP, so Madrid claims a strong colour although it is small on the
+  land map; regions two borders apart get distinct colours as well as direct
+  neighbours, so when a region balloons and the thin region between it and
+  the next shrinks to a ribbon, the two stay readable; the last regions
+  coloured get a refinement pass; the palette drops two near-identical
+  colours. **The default (`"land"`) is unchanged**: land and population maps
+  keep exactly the colours of 0.6, and a GDP map shares them.
+
 ## [0.6.2] - 2026-10-30
 
 ### Fixed

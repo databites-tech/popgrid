@@ -2,8 +2,9 @@
 """
 Generate popgrid maps for one or more countries.
 
-Two grid modes:
+Grid modes:
   pop  (default)  every cell = an equal share of the country's POPULATION
+  gdp             every cell = an equal share of the country's GDP (PPP, 2024)
   area            every cell = an equal share of the country's LAND AREA
 
 Usage
@@ -13,6 +14,7 @@ Usage
     python generate.py ALL                   # the 24 countries with curated census data
     python generate.py WORLD                 # every country (GHS-POP estimates elsewhere)
     python generate.py ESP --mode area       # land-area map
+    python generate.py ESP --mode gdp        # GDP map (official regional GDP in 89 countries)
     python generate.py ESP --mode compare    # area + population side by side
     python generate.py ESP DEU --mode area   # land-area maps, batch
     python generate.py ESP --n 1500          # finer detail
@@ -35,7 +37,7 @@ import sys
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
 from popgrid import AreaGrid, PopGrid               # noqa: E402
-from popgrid.data import bundled_countries, supported_countries  # noqa: E402
+from popgrid.data import bundled_countries, gdp_quality, supported_countries  # noqa: E402
 
 # Default batch: the reference set plus a couple of stress tests.
 DEFAULT_SET = ["ESP", "DEU", "ITA", "FRA", "GBR"]
@@ -82,6 +84,8 @@ def title_for(iso: str, mode: str, override: "str | None") -> "str | None":
     name = country_name(iso)
     if mode == "pop":
         return f"Population of {name}, Visualised"
+    if mode == "gdp":
+        return f"Economy of {name}, Visualised"
     if mode == "area":
         return f"Land Area of {name}, Visualised"
     return None
@@ -439,7 +443,7 @@ def main() -> int:
     )
     p.add_argument("countries", nargs="*",
                    help="ISO3 codes, ALL (curated census countries) or WORLD (every country).")
-    p.add_argument("--mode", default="pop", choices=["pop", "area", "compare"],
+    p.add_argument("--mode", default="pop", choices=["pop", "area", "gdp", "compare"],
                    help="pop (population, default) | area (land area) | "
                         "compare (area + population side by side).")
 
@@ -599,12 +603,19 @@ def main() -> int:
                 fig, ag, pg = compare_figure(iso, args)
                 blocks = f"{ag.total_cells}/{pg.total_cells}"
             else:
-                GridClass = PopGrid if args.mode == "pop" else AreaGrid
-                grid = GridClass(
-                    iso, n=args.n, cluster_distance_km=args.cluster,
+                kwargs = dict(
+                    n=args.n, cluster_distance_km=args.cluster,
                     palette=palette, dissolve_by=dissolve, engine=args.engine,
                     exclude=args.exclude,
                 )
+                if args.mode == "area":
+                    grid = AreaGrid(iso, **kwargs)
+                else:
+                    by = "gdp" if args.mode == "gdp" else "population"
+                    grid = PopGrid(iso, by=by, **kwargs)
+                    if by == "gdp" and gdp_quality(iso) != "reported":
+                        print(f"  {iso}: note: regional GDP is a model estimate here "
+                              "(no official regional accounts); it closely follows population.")
                 grid.build()
                 fig = grid.plot(
                     title=title_for(iso, args.mode, args.title),

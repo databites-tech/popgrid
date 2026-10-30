@@ -26,17 +26,26 @@ import shapely
 from .data import (
     load_country_regions,
     load_region_populations,
+    load_region_values,
+    VARIABLES,
     admin1_parent_map,
     RECOMMENDED_SETTINGS,
     REGION_LABELS,
 )
 from .geometry import detect_landmasses, project_regions
 from .grid import cell_size_for_n, generate_cells
-from .render import build_adjacency_color_map, build_color_map, create_figure, draw_map
+from .render import (
+    build_adjacency_color_map,
+    build_color_map,
+    build_layout_color_map,
+    create_figure,
+    draw_map,
+)
 
 logger = logging.getLogger(__name__)
 
 ENGINES = ("auto", "dougenik", "diffusion")
+COLOR_MODES = ("land", "layouts")
 
 
 def _country_title(iso3: str, region_label: Optional[str] = None) -> str:
@@ -339,9 +348,12 @@ class AreaGrid:
         color_map: Optional[dict[str, str]] = None,
         engine: str = "auto",
         exclude: Optional[list[str]] = None,
+        color_mode: str = "land",
     ) -> None:
         if engine not in ENGINES:
             raise ValueError(f"engine must be one of {ENGINES}; got {engine!r}")
+        if color_mode not in COLOR_MODES:
+            raise ValueError(f"color_mode must be one of {COLOR_MODES}; got {color_mode!r}")
         self.country_iso3 = country_iso3.strip().upper()
         self.n = n
         self.cluster_distance_km = cluster_distance_km
@@ -362,6 +374,13 @@ class AreaGrid:
         # the country's RECOMMENDED_SETTINGS["exclude"] (uninhabited specks
         # such as Macquarie Island).
         self.exclude: set[str] = set(exclude or ())
+        # How region colours are chosen. "land" (default): from the real
+        # border graph weighted by land area, the colouring popgrid has always
+        # used. "layouts": also keeps regions two borders apart distinct and
+        # weights by the largest share across land, population and GDP, so a
+        # region that balloons in one layout stays readable; colours differ
+        # from "land". Both give identical colours to every layout of a country.
+        self.color_mode = color_mode
 
         # Custom GeoDataFrame path (from_geodataframe)
         self._custom_gdf: Optional[gpd.GeoDataFrame] = None
@@ -378,6 +397,13 @@ class AreaGrid:
         self._quotas: Optional[dict[str, int]] = None
 
     # ── Build pipeline ────────────────────────────────────────────────────────
+
+    def _name_to_parent(self) -> Optional[dict[str, str]]:
+        """Fine admin-1 name → drawn region, when regions were dissolved."""
+        resolved = self.dissolve_by
+        if resolved == "auto":
+            resolved = RECOMMENDED_SETTINGS.get(self.country_iso3, {}).get("dissolve_by", None)
+        return admin1_parent_map(self.country_iso3, resolved) if resolved else None
 
     def _assign_stable_colors(self) -> None:
         """
@@ -402,9 +428,32 @@ class AreaGrid:
             for _, row in self._regions_proj.iterrows()
             if row["region_name"] is not None and row.geometry is not None
         }
-        self._color_map = build_adjacency_color_map(
-            names, adjacency, self.palette, sizes=sizes
-        )
+        if self.color_mode == "layouts":
+            # Weight each region by its largest share across every layout
+            # popgrid can draw, so a region small in land but huge in people
+            # or money (Madrid) still claims a distinct colour.
+            layers = [sizes]
+            if self._custom_gdf is None:
+                name_to_parent = self._name_to_parent()
+                for by in VARIABLES:
+                    try:
+                        layers.append(load_region_values(
+                            self.country_iso3, names, by=by, name_to_parent=name_to_parent
+                        ))
+                    except Exception:  # noqa: BLE001 - colours must never fail a build
+                        pass
+            shares = []
+            for layer in layers:
+                total = sum(max(v, 0) for v in layer.values()) or 1.0
+                shares.append({k: max(v, 0) / total for k, v in layer.items()})
+            sizes = {n: max(sh.get(n, 0.0) for sh in shares) for n in names}
+            self._color_map = build_layout_color_map(
+                names, adjacency, self.palette, sizes=sizes
+            )
+        else:
+            self._color_map = build_adjacency_color_map(
+                names, adjacency, self.palette, sizes=sizes
+            )
         if self.color_overrides:
             unknown = sorted(set(self.color_overrides) - set(self._color_map))
             if unknown:
@@ -832,6 +881,7 @@ class AreaGrid:
         color_map: Optional[dict[str, str]] = None,
         engine: str = "auto",
         exclude: Optional[list[str]] = None,
+        color_mode: str = "land",
     ) -> "AreaGrid":
         """
         Build an AreaGrid or PopGrid from any GeoDataFrame — no Natural Earth
@@ -902,7 +952,7 @@ class AreaGrid:
             "CUSTOM", n=n, cluster_distance_km=cluster_distance_km,
             palette=palette, dissolve_by=None, title=title, subtitle=subtitle,
             data_source=data_source, color_map=color_map, engine=engine,
-            exclude=exclude,
+            exclude=exclude, color_mode=color_mode,
         )
         instance._custom_gdf = gdf
         instance._custom_region_col = region_col
@@ -995,6 +1045,106 @@ def _reanchor_secondary(
     return out
 
 
+def _separate_landmasses(
+    all_cells: gpd.GeoDataFrame,
+    mainland_id: int,
+    geo_centroids: dict[int, tuple[float, float]],
+    cell_size: float,
+    gap_cells: int = 1,
+) -> gpd.GeoDataFrame:
+    """
+    Push every non-mainland landmass away from the others until no block of
+    it touches (or sits on) a block of another landmass, with ``gap_cells``
+    empty lattice cells between them.
+
+    Cells are already snapped to one lattice, so each landmass is moved by
+    whole cells. The push direction is the landmass's geographic bearing from
+    the mainland (Northern Ireland moves west, the Balearics south-east), so
+    the map keeps reading geographically; a landmass with no bearing (same
+    centroid) moves away from the mainland's block centroid instead.
+    Landmasses are processed from the largest down, each against everything
+    already placed.
+    """
+    if all_cells.empty or all_cells["landmass_id"].nunique() < 2:
+        return all_cells
+    out = all_cells.copy()
+    cs = cell_size
+    half = cs / 2.0
+    ox = float(out["cx"].min())
+    oy = float(out["cy"].min())
+
+    def keys_of(frame) -> set:
+        xs = np.round((frame["cx"].to_numpy() - ox) / cs).astype(int)
+        ys = np.round((frame["cy"].to_numpy() - oy) / cs).astype(int)
+        return set(zip(xs.tolist(), ys.tolist()))
+
+    def dilate(keys: set, r: int) -> set:
+        grown = set(keys)
+        for _ in range(r):
+            grown |= {(i + di, j + dj) for (i, j) in grown
+                      for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+        return grown
+
+    sizes = out.groupby("landmass_id").size().sort_values(ascending=False)
+    order = [lm for lm in sizes.index if lm == mainland_id] + \
+            [lm for lm in sizes.index if lm != mainland_id]
+    placed: set = set()
+    main = out[out["landmass_id"] == mainland_id]
+    main_c = (float(main["cx"].mean()), float(main["cy"].mean())) if not main.empty else None
+    main_geo = geo_centroids.get(mainland_id)
+
+    for lm in order:
+        m = out["landmass_id"] == lm
+        keys = keys_of(out[m])
+        if lm == mainland_id or not placed:
+            placed |= dilate(keys, gap_cells)
+            continue
+        # Direction: geographic bearing from the mainland; fallback, away from
+        # the mainland's blocks.
+        geo = geo_centroids.get(lm)
+        if geo is not None and main_geo is not None and (geo[0] != main_geo[0] or geo[1] != main_geo[1]):
+            vx, vy = geo[0] - main_geo[0], geo[1] - main_geo[1]
+        elif main_c is not None:
+            cx0, cy0 = float(out.loc[m, "cx"].mean()), float(out.loc[m, "cy"].mean())
+            vx, vy = cx0 - main_c[0], cy0 - main_c[1]
+        else:
+            vx, vy = 1.0, 0.0
+        norm = (vx * vx + vy * vy) ** 0.5 or 1.0
+        vx, vy = vx / norm, vy / norm
+        # Step one whole cell at a time along the bearing (Bresenham-like
+        # accumulation), until the landmass clears everything placed so far.
+        shift_x = shift_y = 0
+        acc_x = acc_y = 0.0
+        steps = 0
+        while keys & placed and steps < 10_000:
+            acc_x += vx
+            acc_y += vy
+            dx = int(round(acc_x)) - shift_x
+            dy = int(round(acc_y)) - shift_y
+            if dx == 0 and dy == 0:
+                # Sub-cell progress only; force a step along the dominant axis
+                if abs(vx) >= abs(vy):
+                    dx = 1 if vx >= 0 else -1
+                    acc_x = shift_x + dx
+                else:
+                    dy = 1 if vy >= 0 else -1
+                    acc_y = shift_y + dy
+            shift_x += dx
+            shift_y += dy
+            keys = {(i + dx, j + dy) for (i, j) in keys}
+            steps += 1
+        if shift_x or shift_y:
+            nx = out.loc[m, "cx"].to_numpy() + shift_x * cs
+            ny = out.loc[m, "cy"].to_numpy() + shift_y * cs
+            out.loc[m, "cx"] = nx
+            out.loc[m, "cy"] = ny
+            out.loc[m, "geometry"] = shapely.box(nx - half, ny - half, nx + half, ny + half)
+            logger.info("landmass %s moved %d,%d cell(s) to stay clear of other land",
+                        lm, shift_x, shift_y)
+        placed |= dilate(keys, gap_cells)
+    return out
+
+
 def _is_folded(geom) -> bool:
     """
     True when a deformed region polygon has collapsed on itself: ``make_valid``
@@ -1024,9 +1174,19 @@ class PopGrid(AreaGrid):
         ISO 3166-1 alpha-3 code, e.g. ``'ESP'``, ``'DEU'``, ``'JPN'``.
     n:
         Target number of cells.  Default 1000.
+    by:
+        What each block counts: ``"population"`` (default) or ``"gdp"``
+        (PPP, 2024). For GDP, check :func:`popgrid.data.gdp_quality`: only
+        countries marked ``"reported"`` have official regional figures.
     dissolve_by, palette, cluster_distance_km, title, subtitle, data_source:
         Same as :class:`AreaGrid`.
     """
+
+    def __init__(self, country_iso3: str, n: int = 1000, *args, by: str = "population", **kwargs) -> None:
+        if by not in VARIABLES:
+            raise ValueError(f"by must be one of {tuple(VARIABLES)}; got {by!r}")
+        super().__init__(country_iso3, n, *args, **kwargs)
+        self.by = by
 
     def _deform(self, shaped: gpd.GeoDataFrame, sub_pops: dict[str, float]) -> gpd.GeoDataFrame:
         """
@@ -1176,17 +1336,17 @@ class PopGrid(AreaGrid):
             logger.info("[3/6] Loading population weights …")
             # When geometries were dissolved to a coarser level, aggregate the
             # fine-grained populations up to those parent regions.
-            resolved = self.dissolve_by
-            if resolved == "auto":
-                resolved = RECOMMENDED_SETTINGS.get(
-                    self.country_iso3, {}
-                ).get("dissolve_by", None)
-            name_to_parent = (
-                admin1_parent_map(self.country_iso3, resolved) if resolved else None
-            )
-            pop_weights = load_region_populations(
-                self.country_iso3, region_names, name_to_parent=name_to_parent
-            )
+            name_to_parent = self._name_to_parent()
+            if self.by == "population":
+                # Called by name so tests and callers can patch it.
+                pop_weights = load_region_populations(
+                    self.country_iso3, region_names, name_to_parent=name_to_parent
+                )
+            else:
+                pop_weights = load_region_values(
+                    self.country_iso3, region_names, by=self.by,
+                    name_to_parent=name_to_parent,
+                )
         total_pop = sum(pop_weights.values()) or len(region_names)
         raw_quotas = {
             name: self.n * pop_weights.get(name, 0) / total_pop
@@ -1254,6 +1414,7 @@ class PopGrid(AreaGrid):
         mainland_id = raw_lms[0].id if raw_lms else None
         geo_bbox = None   # mainland bounds before deformation
         def_bbox = None   # mainland bounds after deformation
+        geo_centroids: dict[int, tuple[float, float]] = {}
 
         for lm in raw_lms:
             owned_ilocs = [i for i in lm.region_idx if owner.get(i) == lm.id]
@@ -1271,6 +1432,8 @@ class PopGrid(AreaGrid):
 
             if lm.id == mainland_id:
                 geo_bbox = tuple(regions_sub.total_bounds)
+            c = regions_sub.geometry.union_all().centroid
+            geo_centroids[lm.id] = (float(c.x), float(c.y))
 
             target_area = lm_quota * cell_area * OVERSIZE
             shaped = scale_to_area(regions_sub, target_area)
@@ -1348,6 +1511,12 @@ class PopGrid(AreaGrid):
                 all_cells["geometry"] = shapely.box(
                     sx - half, sy - half, sx + half, sy + half
                 )
+                # Separate lands stay separate: deforming the mainland can
+                # move its blocks over the spot where a detached landmass is
+                # placed (Northern Ireland ended up inside Great Britain). Any
+                # landmass whose blocks touch another's is pushed outward
+                # along its geographic bearing until a clear gap remains.
+                all_cells = _separate_landmasses(all_cells, mainland_id, geo_centroids, cs)
         else:
             all_cells = gpd.GeoDataFrame()
 
@@ -1365,7 +1534,7 @@ class PopGrid(AreaGrid):
         if self.subtitle is None:
             pct = round(100 / self.n, 2) if self.n > 0 else 0
             self.subtitle = (
-                f"Every block = {pct}% of the national population"
+                f"Every block = {pct}% of the national {VARIABLES[self.by]}"
                 f"  ({self.total_cells:,} blocks total)"
             )
 

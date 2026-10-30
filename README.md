@@ -1,6 +1,6 @@
 # popgrid
 
-**Tiled grid maps for Python, land area and population, clearly explained.**
+**Tiled grid maps for Python: land area, population and GDP, clearly explained.**
 
 [![PyPI](https://img.shields.io/pypi/v/popgrid.svg)](https://pypi.org/project/popgrid/)
 [![Python](https://img.shields.io/pypi/pyversions/popgrid.svg)](https://pypi.org/project/popgrid/)
@@ -43,6 +43,35 @@ AreaGrid("ESP").plot().savefig("spain_area.png", dpi=170, bbox_inches="tight")
 | ![Population of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_pop.png) | ![Land area of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_area.png) |
 
 `.plot()` builds the grid on first call and returns a Matplotlib figure, so you can save, show, or restyle it however you like.
+
+### GDP
+
+`by="gdp"` sizes regions by GDP (purchasing power parity, 2024) instead of people. Same regions, same colours as the other two maps, so you can read all three side by side.
+
+```python
+PopGrid("ESP", by="gdp").plot(title="Economy of Spain")
+```
+
+Colours are assigned once per country from real borders, so a region that balloons in one layout can end up touching a region it never borders in reality, sometimes one of the same colour (Madrid and Andalucía are both yellow by default). `color_mode="layouts"` chooses colours with every layout in mind: regions two borders apart stay distinct and a region is weighted by its largest share of land, people or GDP. Pass it to all three maps of a country and they share one colour map, as below. The default stays the colouring of earlier versions, so existing maps do not change.
+
+```python
+for g in (AreaGrid("ESP", color_mode="layouts"),
+          PopGrid("ESP", color_mode="layouts"),
+          PopGrid("ESP", by="gdp", color_mode="layouts")):
+    g.plot()
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_land_people_gdp.png" width="100%" alt="Spain by land, population and GDP">
+</p>
+
+Madrid is 1.6% of the land, 14% of the people and 22% of the money. Regional GDP comes from the [Kummu et al. gridded GDP dataset](https://doi.org/10.5281/zenodo.16741980), which carries **official regional accounts for 89 countries**. Elsewhere it spreads the national GDP across regions with a model that closely follows population, so a GDP map of such a country mostly repeats its population map. Check before you publish:
+
+```python
+from popgrid.data import gdp_quality
+gdp_quality("ESP")   # 'reported': official regional GDP
+gdp_quality("ETH")   # 'modelled': national GDP only, regional split estimated
+```
 
 ---
 
@@ -142,6 +171,9 @@ python generate.py ESP --mode pop
 # Land-area map
 python generate.py ESP --mode area
 
+# GDP map
+python generate.py ESP --mode gdp
+
 # Side-by-side comparison (land area vs population, equal block size)
 python generate.py ESP --mode compare
 
@@ -227,7 +259,8 @@ For sub-national data such as cities, or to use your own population numbers, use
 1. Load admin-1 regions, project to an equal-area CRS, and choose a cell size so the country tiles into roughly `n` blocks (default 1000, so one block ≈ 0.1%).
 2. Allocate an integer block quota per region using the Hamilton (largest-remainder) method, weighted by area or population.
 3. For population maps, deform each landmass with a contiguous-area cartogram so a region's area tracks its population, then rasterise the deformed shapes onto the grid. Dense regions bulge, sparse regions pinch, relative position and silhouette are preserved. Two engines: a rubber-sheet cartogram (Dougenik et al.) by default, and a diffusion cartogram (Gastner-Newman) that `engine="auto"` switches to when the sheet would tear, which happens for countries with an empty interior such as China or Canada. Pass `engine="diffusion"` to use it everywhere.
-4. Fit each region to its exact quota and assign stable colours from the geographic adjacency graph, so the same region keeps the same colour across the area and population maps.
+4. Fit each region to its exact quota and enforce the real border graph, so no two regions touch on the grid unless they touch in reality. Detached landmasses are then placed relative to the deformed mainland and pushed clear of it if the deformation moved blocks over them.
+5. Assign colours once per country from the geographic border graph, so the same region keeps the same colour across the land, population and GDP maps. By default regions are weighted by land area and only direct neighbours are kept apart; `color_mode="layouts"` also weights by the largest share of people or GDP and keeps regions two borders apart distinct.
 
 ---
 
@@ -259,6 +292,7 @@ Built something with popgrid? Share it in [Show and tell](https://github.com/dat
 - Country and admin-1 boundaries: [Natural Earth](https://www.naturalearthdata.com/) (`ne_10m_admin_1_states_provinces`), public domain.
 - Curated population figures: national statistical offices (see the `source` column of `population.csv`).
 - Fallback population figures: [GHS-POP R2023A](https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php), epoch 2025, European Commission JRC, summed over Natural Earth admin-1 polygons.
+- GDP: Kummu, M. et al. (2025), [Downscaled gridded global dataset for GDP per capita PPP 1990-2022](https://doi.org/10.1038/s41597-025-04487-x), Scientific Data, updated to 2024 ([Zenodo](https://doi.org/10.5281/zenodo.16741980), CC BY 4.0). Total GDP at 30 arc-seconds, 2017 international dollars, summed over Natural Earth admin-1 polygons; `quality` marks the 89 countries with reported regional accounts.
 - Barcelona example: district boundaries from [Ajuntament de Barcelona](https://opendata-ajuntament.barcelona.cat/) open data; population from the 2023 municipal register.
 
 ---

@@ -393,13 +393,28 @@ _CURATED_CSV = _RESOURCES / "population.csv"
 _GHS_CSV = _RESOURCES / "population_ghs.csv"
 
 
-def _read_population_rows(csv_path: Path, iso3: str) -> dict[str, int]:
-    """``{region_name: population}`` for one country from one table."""
+#: Total GDP (PPP, 2017 international USD) of every Natural Earth admin-1 unit,
+#: summed from the Kummu et al. gridded GDP raster. Regenerate with
+#: ``scripts/build_gdp.py``; never edit.
+_GDP_CSV = _RESOURCES / "gdp.csv"
+
+#: Variables :class:`PopGrid` can size regions by (its ``by=`` argument),
+#: mapped to the label used in subtitles.
+VARIABLES: dict[str, str] = {
+    "population": "population",
+    "gdp": "GDP",
+}
+
+
+def _read_population_rows(
+    csv_path: Path, iso3: str, value_col: str = "population"
+) -> dict[str, int]:
+    """``{region_name: value}`` for one country from one table."""
     import csv as _csv
 
     out: dict[str, int] = {}
     if not csv_path.exists():
-        logger.warning("population table not found at %s", csv_path)
+        logger.warning("data table not found at %s", csv_path)
         return out
     iso = iso3.strip().upper()
     with open(csv_path, newline="", encoding="utf-8") as fh:
@@ -408,7 +423,7 @@ def _read_population_rows(csv_path: Path, iso3: str) -> dict[str, int]:
                 continue
             name = (row.get("region_name") or "").strip()
             try:
-                pop = int(float(row["population"]))
+                pop = int(float(row[value_col]))
             except (ValueError, KeyError, TypeError):
                 pop = 0
             if name:
@@ -524,3 +539,74 @@ def load_region_populations(
             )
 
     return result
+
+
+def load_region_gdp(
+    iso3: str,
+    region_names: list[str],
+    name_to_parent: Optional[dict[str, str]] = None,
+) -> dict[str, int]:
+    """
+    Return ``{region_name: GDP}`` (PPP, 2017 international USD, 2024).
+
+    Reads ``resources/gdp.csv``. A region missing from the table (a name the
+    table spells differently) gets the country's GDP per person times its
+    population, so it is sized like an average region rather than dropped.
+
+    Check :func:`gdp_quality` before presenting a GDP map: only countries
+    marked ``"reported"`` have official regional GDP behind them.
+    """
+    gdp = _read_population_rows(_GDP_CSV, iso3, value_col="gdp")
+    if not gdp:
+        raise DataNotFoundError(f"No GDP data for {iso3!r} in {_GDP_CSV.name}.")
+    if name_to_parent:
+        agg: dict[str, int] = {}
+        for fine, v in gdp.items():
+            parent = name_to_parent.get(fine, fine)
+            agg[parent] = agg.get(parent, 0) + v
+        gdp = agg
+
+    result = {name: gdp[name] for name in region_names if name in gdp}
+    missing = [name for name in region_names if name not in gdp]
+    if missing:
+        pops = load_region_populations(iso3, region_names, name_to_parent=name_to_parent)
+        known_pop = sum(pops.get(n, 0) for n in result) or 1
+        per_person = sum(result.values()) / known_pop
+        for name in missing:
+            result[name] = int(per_person * pops.get(name, 0))
+            logger.warning(
+                "No GDP data for %r (%s); using national GDP per person x population",
+                name, iso3,
+            )
+    return result
+
+
+def gdp_quality(iso3: str) -> Optional[str]:
+    """
+    ``"reported"`` when the country's regional GDP comes from official
+    regional statistics, ``"modelled"`` when only national GDP is reported
+    and the regional split is a model estimate (closely tracks population),
+    ``None`` when the country is not in the table.
+    """
+    import csv as _csv
+
+    iso = iso3.strip().upper()
+    with open(_GDP_CSV, newline="", encoding="utf-8") as fh:
+        for row in _csv.DictReader(fh):
+            if row["iso3"] == iso:
+                return row["quality"]
+    return None
+
+
+def load_region_values(
+    iso3: str,
+    region_names: list[str],
+    by: str = "population",
+    name_to_parent: Optional[dict[str, str]] = None,
+) -> dict[str, int]:
+    """``{region_name: value}`` for the variable ``by`` (see :data:`VARIABLES`)."""
+    if by == "population":
+        return load_region_populations(iso3, region_names, name_to_parent=name_to_parent)
+    if by == "gdp":
+        return load_region_gdp(iso3, region_names, name_to_parent=name_to_parent)
+    raise ValueError(f"by must be one of {tuple(VARIABLES)}; got {by!r}")
