@@ -1316,6 +1316,16 @@ class PopGrid(AreaGrid):
             # Re-anchor detached territories to the *deformed* mainland frame so
             # they keep their geographic bearing relative to the cartogram (this
             # is why an enclave like Melilla must not drift into a panel).
+            # The deformed frame is where the mainland's blocks actually are,
+            # not the bounds of its deformed polygons: a thin sliver that
+            # rasterises to almost nothing (Aysén, in Chile) would stretch
+            # that frame far past the drawn map and drag a territory with it.
+            if mainland_id is not None and not all_cells.empty:
+                mc = all_cells[all_cells["landmass_id"] == mainland_id]
+                if not mc.empty:
+                    h = self._cell_size / 2.0
+                    def_bbox = (float(mc["cx"].min()) - h, float(mc["cy"].min()) - h,
+                                float(mc["cx"].max()) + h, float(mc["cy"].max()) + h)
             if mainland_id is not None and geo_bbox and def_bbox:
                 all_cells = _reanchor_secondary(
                     all_cells, mainland_id, geo_bbox, def_bbox, self._cell_size

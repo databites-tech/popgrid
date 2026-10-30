@@ -1212,19 +1212,30 @@ def create_figure(
     footer_h_in = 0.35
 
     total_h = main_h_in + panel_h_in + title_h_in + sep_h_in + footer_h_in
+    bands_in = title_h_in + sep_h_in + footer_h_in
 
+    # Row heights. With an explicit figsize the text bands (title, the
+    # "Detached territories" separator, footer) keep their size in inches and
+    # the maps take whatever height is left, so a small figure never squeezes
+    # two lines of text into a sliver.
+    main_row, panel_row = main_h_in, panel_h_in
     if figsize is not None:
         fig_w, total_h = figsize
+        avail = total_h - bands_in
+        if avail > 0 and main_h_in + panel_h_in > 0:
+            k = avail / (main_h_in + panel_h_in)
+            main_row, panel_row = main_h_in * k, panel_h_in * k
 
     fig = plt.figure(figsize=(fig_w, total_h), facecolor=background_color)
+    fig._popgrid_bands_in = bands_in  # read by generate.py's compare layout
 
     # ── GridSpec: title | main | [sep | panels] | footer ─────────────────────
     if panel_lms:
         n_rows = 5
-        height_ratios = [title_h_in, main_h_in, sep_h_in, panel_h_in, footer_h_in]
+        height_ratios = [title_h_in, main_row, sep_h_in, panel_row, footer_h_in]
     else:
         n_rows = 3
-        height_ratios = [title_h_in, main_h_in, footer_h_in]
+        height_ratios = [title_h_in, main_row, footer_h_in]
 
     outer = gridspec.GridSpec(
         n_rows, 1,
