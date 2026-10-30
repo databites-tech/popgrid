@@ -2,6 +2,34 @@
 
 All notable changes to popgrid are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Southern Chile no longer drops into a "Detached territories" box on the
+  population map.** Territories are placed relative to the deformed
+  mainland, and that frame was taken from the deformed polygons, which keep
+  a thin sliver of Aysén reaching ~600 km past the last drawn block. It now
+  comes from the mainland's actual blocks, so Magallanes sits inline below
+  Aysén, as on the land map. Across 38 countries checked, the only other
+  change is Okinawa, now inline in Japan's population map as it is on the
+  land map.
+
+### Changed
+- **`generate.py --mode compare` looks better at any shape.** The canvas now
+  follows the country: wide countries get a wide figure (never wider than
+  2:1), tall ones like Chile or Norway a near-square one where the maps run
+  the full height instead of shrinking to a sliver. Each map is drawn twice,
+  the second time at the exact size it is printed, so region labels are
+  fitted to the size people actually see.
+- New footer in compare mode, left-aligned and readable: a bold credit line
+  (`--credit`, default "Made with popgrid", `''` hides it) above the sources, which now name the population source too
+  (the national office for curated countries, GHS-POP otherwise).
+- Subtitles keep clear margins: the block total moved to its own line, and
+  each column is at least as wide as its title plus padding.
+- `plot(figsize=...)` keeps the title, "Detached territories" and footer bands
+  at their size in inches and gives the rest to the maps, so a small figure no
+  longer squeezes their text together.
+
 ## [0.6.1] - 2026-10-29
 
 Every region gets its blocks, including the ones nobody can reach.

@@ -195,21 +195,24 @@ def load_data_gdf(path, region_col, bbox=None):
     return gdf
 
 
-def _grid_to_image(grid, args):
+def _grid_to_image(grid, args, figsize=None):
     """Render a grid's map WITHOUT title/subtitle/source and return
-    ``(rgba_array, cell_px)`` where cell_px is one grid cell's size in pixels of
-    the returned image. The caller uses cell_px to rescale both maps to a common
-    block size so a block is identical across the pair."""
+    ``(rgba_array, cell_px, size_in)``: the image, one grid cell's size in
+    pixels of that image, and the figure size it was drawn at. The caller uses
+    cell_px to bring both maps to a common block size so a block is identical
+    across the pair, and size_in to re-render at the final printed scale."""
     import io
     import matplotlib.pyplot as plt
 
     fig = grid.plot(
-        title="", subtitle="", data_source=" ",
+        title="", subtitle="", data_source=" ", figsize=figsize,
         show_labels=not args.no_labels, label_min_cells=args.label_min,
         background_color=args.bg, scope=args.scope,
         background_style=args.background, show_region_borders=not args.no_region_borders,
         style=style_from(args), label_mode=args.label_mode,
     )
+    size_in = tuple(fig.get_size_inches())
+    bands_in = getattr(fig, "_popgrid_bands_in", 0.0)
     # Biggest axes is the main map; measure one cell's pixel span there.
     ax = max(fig.axes, key=lambda a: a.get_position().width * a.get_position().height)
     cs = grid.cell_size_km * 1000.0  # data units (metres)
@@ -220,10 +223,10 @@ def _grid_to_image(grid, args):
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=args.dpi, bbox_inches="tight",
-                facecolor=fig.get_facecolor())
+                pad_inches=0.05, facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
-    return plt.imread(buf), cell_px
+    return plt.imread(buf), cell_px, (size_in, bands_in)
 
 
 def _rescale(img, factor):
@@ -252,12 +255,66 @@ def _pad_to(img, H, W, bg):
     return out
 
 
+def _same_block_size(img_a, cpa, img_b, cpb, bg):
+    """Bring two map images to one block size and one canvas size."""
+    target = min(cpa, cpb)
+    img_a = _rescale(img_a, target / cpa)
+    img_b = _rescale(img_b, target / cpb)
+    H = max(img_a.shape[0], img_b.shape[0])
+    W = max(img_a.shape[1], img_b.shape[1])
+    return _pad_to(img_a, H, W, bg), _pad_to(img_b, H, W, bg), target
+
+
+def population_source(iso: str) -> str:
+    """Short population credit: the curated table's source, else GHS-POP."""
+    import csv
+    from collections import Counter
+    from popgrid import data as pgdata
+
+    found: Counter = Counter()
+    with open(pgdata._RESOURCES / "population.csv", newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["iso3"] == iso and (row.get("source") or "").strip():
+                found[row["source"].strip()] += 1
+    if found:
+        return found.most_common(1)[0][0]
+    return "GHS-POP 2025 (JRC, European Commission)"
+
+
+def _text_width_in(text: str, **kw) -> float:
+    """Rendered width of a string in inches."""
+    import matplotlib.pyplot as plt
+    f = plt.figure()
+    t = f.text(0, 0, text, **kw)
+    w = t.get_window_extent(f.canvas.get_renderer()).width / f.dpi
+    plt.close(f)
+    return w
+
+
+# Layout of the side-by-side figure, in inches.
+_SIDE = 0.7          # outer left/right margin
+_GUTTER = 1.4        # space between the two columns, holds the arrow
+_HEAD = 2.0          # title + subtitle band
+_FOOT = 1.15         # credit + source band
+_TEXT_PAD = 0.45     # minimum air on each side of a title or subtitle
+_MAP_MAX_W = 10.0    # a wide country fills this width
+_MAP_MAX_H = 13.0    # a tall country (Chile, Norway) fills this height
+_MAX_RATIO = 2.0     # never wider than 2:1, so the post holds up in a feed
+
+CREDIT = "Made with popgrid"
+
+
 def compare_figure(iso, args):
     """
     Build an AreaGrid and a PopGrid of the same country and place them side by
-    side — land area on the left, population on the right — at equal panel size
-    and, crucially, the SAME block size, so a block in one map equals a block in
-    the other. Region colours are identical across both (stable-colour feature).
+    side, land area on the left and population on the right, at the SAME block
+    size, so a block in one map equals a block in the other. Region colours are
+    identical across both (stable-colour feature).
+
+    The canvas adapts to the country's shape: a wide country gets a wide figure,
+    a tall one (Chile) a near-square one where the maps run the full height.
+    Both maps are drawn twice: once to learn their shape, then again at the
+    exact size they are printed, so labels are fitted to the size people see.
 
     ``iso`` may be either an ISO3 string (bundled country) or a GeoDataFrame
     (custom dataset via ``--data``). When a GDF is passed, ``args.name`` is used
@@ -270,57 +327,106 @@ def compare_figure(iso, args):
         name = args.name or "Custom Region"
         ag = _build_from_gdf(AreaGrid, iso, args)
         pg = _build_from_gdf(PopGrid, iso, args)
+        pop_src = None
     else:
         name = country_name(iso)
         ag = _build(AreaGrid, iso, args)
         pg = _build(PopGrid, iso, args)
-    img_area, cpa = _grid_to_image(ag, args)
-    img_pop, cpp = _grid_to_image(pg, args)
-
-    # Normalise to a common block size (downscale the finer one — no upscaling),
-    # then pad both to a shared canvas so the two panels stay aligned.
-    target = min(cpa, cpp)
-    img_area = _rescale(img_area, target / cpa)
-    img_pop = _rescale(img_pop, target / cpp)
+        pop_src = population_source(iso)
     bg = tuple(int(args.bg.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    H = max(img_area.shape[0], img_pop.shape[0])
-    W = max(img_area.shape[1], img_pop.shape[1])
-    img_area = _pad_to(img_area, H, W, bg)
-    img_pop = _pad_to(img_pop, H, W, bg)
 
+    # ── Pass 1: natural render, to learn the shape of the pair ───────────────
+    img_a, cpa, size_a = _grid_to_image(ag, args)
+    img_p, cpp, size_p = _grid_to_image(pg, args)
+    canvas_a, _, target = _same_block_size(img_a, cpa, img_p, cpp, bg)
+    H, W = canvas_a.shape[:2]
+    aspect = H / W
+
+    # ── Layout ────────────────────────────────────────────────────────────────
     pct = round(100 / args.n, 2) if args.n else 0
     muted = "#5E7D6A"
-
-    fig = plt.figure(figsize=(22, 12), facecolor=args.bg)
-    gs = fig.add_gridspec(
-        1, 3, width_ratios=[10, 1.2, 10], wspace=0.02,
-        left=0.02, right=0.98, top=0.84, bottom=0.05,
+    title_kw = dict(fontsize=30, fontweight="bold")
+    sub_kw = dict(fontsize=19, fontstyle="italic")
+    titles = (f"Land Area of {name}", f"Population of {name}")
+    subs = (
+        f"Every block = {pct}% of the national land area",
+        f"Every block = {pct}% of the national population",
     )
-    axL = fig.add_subplot(gs[0]); axL.imshow(img_area); axL.axis("off")
-    axR = fig.add_subplot(gs[2]); axR.imshow(img_pop); axR.axis("off")
-    axM = fig.add_subplot(gs[1]); axM.axis("off")
-    axM.set_xlim(0, 1); axM.set_ylim(0, 1)
+    counts = (f"{ag.total_cells:,} blocks total", f"{pg.total_cells:,} blocks total")
+
+    map_w = min(_MAP_MAX_W, _MAP_MAX_H / aspect)
+    map_h = map_w * aspect
+    widest = max([_text_width_in(t, **title_kw) for t in titles]
+                 + [_text_width_in(s, **sub_kw) for s in subs])
+    col_w = max(map_w, widest + 2 * _TEXT_PAD)
+    fig_w = 2 * _SIDE + 2 * col_w + _GUTTER
+    # A wide country (Switzerland) would make a banner wider than 2:1, which
+    # feeds crop; pad it with air above and below the maps instead.
+    body_h = max(map_h, fig_w / _MAX_RATIO - _HEAD - _FOOT)
+    fig_h = _HEAD + body_h + _FOOT
+
+    # ── Pass 2: redraw each map at the size it will be printed ───────────────
+    cell_in = target * map_h / H          # one block, in final inches
+    imgs = []
+    for grid, cp, size in ((ag, cpa, size_a), (pg, cpp, size_p)):
+        s = cell_in / (cp / args.dpi)
+        (w_in, h_in), bands = size
+        img, cp2, _ = _grid_to_image(
+            grid, args, figsize=(w_in * s, (h_in - bands) * s + bands))
+        imgs.append((img, cp2))
+    canvas_a, canvas_p, target2 = _same_block_size(imgs[0][0], imgs[0][1],
+                                                   imgs[1][0], imgs[1][1], bg)
+    H2, W2 = canvas_a.shape[:2]
+    # Printed size of the redrawn canvas; cropping can shift it a little, so
+    # shrink to fit if it no longer sits inside its column.
+    map_w, map_h = W2 * cell_in / target2, H2 * cell_in / target2
+    fit = min(1.0, col_w / map_w, body_h / map_h)
+    map_w, map_h = map_w * fit, map_h * fit
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor=args.bg)
+
+    def rect(x_in, y_in, w_in, h_in):
+        return [x_in / fig_w, y_in / fig_h, w_in / fig_w, h_in / fig_h]
+
+    map_y = _FOOT + (body_h - map_h) / 2
+    centres = (_SIDE + col_w / 2, _SIDE + col_w + _GUTTER + col_w / 2)
+    for cx, canvas in zip(centres, (canvas_a, canvas_p)):
+        ax = fig.add_axes(rect(cx - map_w / 2, map_y, map_w, map_h))
+        ax.imshow(canvas, interpolation="none")
+        ax.axis("off")
+
+    gx = _SIDE + col_w
+    axM = fig.add_axes(rect(gx + 0.25, map_y + map_h / 2 - 0.3, _GUTTER - 0.5, 0.6))
+    axM.axis("off")
+    axM.set_xlim(0, 1)
+    axM.set_ylim(0, 1)
     axM.annotate(
-        "", xy=(0.95, 0.5), xytext=(0.05, 0.5),
-        arrowprops=dict(arrowstyle="-|>", lw=5, color=FOREST, mutation_scale=40),
+        "", xy=(1.0, 0.5), xytext=(0.0, 0.5),
+        arrowprops=dict(arrowstyle="-|>", lw=3.5, color=FOREST, mutation_scale=30),
     )
 
-    lx, rx = 0.255, 0.745
-    fig.text(lx, 0.94, f"Land Area of {name}", ha="center", va="center",
-             fontsize=30, fontweight="bold", color=FOREST)
-    fig.text(rx, 0.94, f"Population of {name}", ha="center", va="center",
-             fontsize=30, fontweight="bold", color=FOREST)
-    fig.text(lx, 0.885,
-             f"Every block = {pct}% of the national land area  "
-             f"({ag.total_cells:,} blocks total)",
-             ha="center", va="center", fontsize=19, fontstyle="italic", color=muted)
-    fig.text(rx, 0.885,
-             f"Every block = {pct}% of the national population  "
-             f"({pg.total_cells:,} blocks total)",
-             ha="center", va="center", fontsize=19, fontstyle="italic", color=muted)
-    src = args.source or "Source: Natural Earth (ne_10m_admin_1_states_provinces) · popgrid"
-    fig.text(0.5, 0.02, src, ha="center", va="center",
-             fontsize=12, fontstyle="italic", color="#8A9A91")
+    for cx, title, sub, count in zip(centres, titles, subs, counts):
+        fig.text(cx / fig_w, (fig_h - 0.72) / fig_h, title, ha="center", va="center",
+                 color=FOREST, **title_kw)
+        fig.text(cx / fig_w, (fig_h - 1.28) / fig_h, sub, ha="center", va="center",
+                 color=muted, **sub_kw)
+        fig.text(cx / fig_w, (fig_h - 1.68) / fig_h, count, ha="center", va="center",
+                 color=muted, fontsize=14)
+
+    credit = CREDIT if args.credit is None else args.credit
+    if args.source:
+        source = args.source
+    elif pop_src:
+        source = f"Boundaries: Natural Earth  ·  Population: {pop_src}"
+    else:
+        source = "Boundaries: Natural Earth"
+    x0 = _SIDE / fig_w
+    if credit:
+        fig.text(x0, 0.72 / fig_h, credit, ha="left", va="center",
+                 fontsize=17, fontweight="bold", color=FOREST)
+    fig.text(x0, (0.36 if credit else 0.55) / fig_h, source, ha="left", va="center",
+             fontsize=14, color=muted)
     return fig, ag, pg
 
 
@@ -394,6 +500,9 @@ def main() -> int:
                    help="Background grid colour (default: auto).")
     p.add_argument("--label-size", type=float, default=None, metavar="PT",
                    help="Fixed label size in points (default: fit each region).")
+    p.add_argument("--credit", default=None, metavar="STR",
+                   help="Bold credit line in compare mode (default: "
+                        "'Made with popgrid'; pass '' to hide it).")
     p.add_argument("--label-mode", default="auto",
                    choices=["auto", "full", "short", "none"],
                    help="auto: fit, wrap or abbreviate per region (default); "
@@ -471,7 +580,8 @@ def main() -> int:
             plt.show()
         else:
             path = os.path.join(args.out, f"{stem}_{args.mode}.png")
-            fig.savefig(path, dpi=args.dpi, bbox_inches="tight",
+            fig.savefig(path, dpi=args.dpi,
+                            bbox_inches=None if args.mode == "compare" else "tight",
                         facecolor=fig.get_facecolor())
             plt.close(fig)
             print(f"  {stem}: {blocks} blocks → {path}")
@@ -516,7 +626,8 @@ def main() -> int:
                 plt.show()
             else:
                 path = os.path.join(args.out, f"{iso}_{args.mode}.png")
-                fig.savefig(path, dpi=args.dpi, bbox_inches="tight",
+                fig.savefig(path, dpi=args.dpi,
+                            bbox_inches=None if args.mode == "compare" else "tight",
                             facecolor=fig.get_facecolor())
                 plt.close(fig)
                 print(f"  {iso}: {blocks} blocks → {path}")
