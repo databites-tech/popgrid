@@ -59,6 +59,16 @@ _PALETTE_QUAL: list[str] = [
     "#499894", "#86BCB6", "#D37295", "#FABFD2", "#B6992D",
     "#F1CE63", "#79706E", "#D4A6C8", "#A0CBE8", "#FFBE7D",
 ]
+# Tableau 20 minus the two colours that are near-twins of another entry,
+# used by the "layouts" colour mode
+# (#86BCB6 ~ #76B7B2 teal, #F1CE63 ~ #EDC948 yellow): side by side on a
+# cartogram they read as one region.
+_PALETTE_QUAL_SPACED: list[str] = [
+    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
+    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
+    "#499894", "#D37295", "#FABFD2", "#B6992D",
+    "#79706E", "#D4A6C8", "#A0CBE8", "#FFBE7D",
+]
 _PALETTE_BOLD: list[str] = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
     "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#469990",
@@ -212,6 +222,106 @@ def build_adjacency_color_map(
         usage[best] += 1
         if region in big_set:
             big_colors.append(best)
+
+    return assigned
+
+
+def build_layout_color_map(
+    region_names: list[str],
+    adjacency: dict[str, set],
+    palette: str | list[str] = "qual",
+    sizes: dict[str, float] | None = None,
+) -> dict[str, str]:
+    """
+    Assign a palette colour to every region so that **adjacent regions are
+    always visually distinct**, regions **two borders apart** are distinct
+    too wherever the palette allows, and **the largest regions are distinct
+    from one another** even when they are not adjacent.
+
+    Why two borders apart: a cartogram moves regions. When a region balloons
+    (Madrid by GDP), the thin neighbour between it and the next region
+    (Castilla-La Mancha) shrinks to a ribbon and the two outer regions end up
+    almost touching. Giving them different colours keeps every popgrid layout
+    of a country (land, population, GDP) readable with one shared colour map.
+
+    Regions are coloured largest-first (by ``sizes``, falling back to adjacency
+    degree). Each takes the colour with the best score: distance to direct
+    neighbours counts double, distance to second neighbours single, both
+    capped so that "clearly different" is enough; the biggest regions earn a
+    bonus for staying far from each other; ties go to the least-used colour.
+    """
+    from collections import Counter
+
+    unique = sorted(r for r in set(region_names) if r is not None)
+    colors = PALETTES.get(palette, palette) if isinstance(palette, str) else palette  # type: ignore[arg-type]
+    if not isinstance(colors, list) or not colors:
+        colors = _PALETTE_QUAL_SPACED
+    elif colors is _PALETTE_QUAL:
+        colors = _PALETTE_QUAL_SPACED
+
+    sizes = sizes or {}
+    order = sorted(
+        unique,
+        key=lambda r: (-sizes.get(r, 0), -len(adjacency.get(r, set())), r),
+    )
+    n_big = min(len(colors), max(1, len(order) // 2))
+    big_set = set(order[:n_big])
+
+    second: dict[str, set] = {}
+    for r in unique:
+        first = adjacency.get(r, set())
+        two = set()
+        for n in first:
+            two |= adjacency.get(n, set())
+        second[r] = two - first - {r}
+
+    CAP = 0.30  # beyond this, two colours are plainly different
+    assigned: dict[str, str] = {}
+    big_colors: list[str] = []
+    usage: Counter = Counter()
+
+    def score_of(region: str, c: str) -> float:
+        n1 = [assigned[n] for n in adjacency.get(region, set()) if n in assigned and n != region]
+        n2 = [assigned[n] for n in second.get(region, set()) if n in assigned]
+        d1 = min((_color_distance(c, nc) for nc in n1), default=CAP)
+        d2 = min((_color_distance(c, nc) for nc in n2), default=CAP)
+        s = 2.0 * min(d1, CAP) + min(d2, CAP)
+        if region in big_set:
+            others = [assigned[b] for b in big_set if b in assigned and b != region]
+            if others:
+                s += 0.5 * min(min(_color_distance(c, bc) for bc in others), CAP)
+        return s
+
+    # Greedy pass, largest region first.
+    for region in order:
+        best, best_score = colors[0], -1e9
+        for c in colors:
+            s = score_of(region, c) - 0.01 * usage[c]
+            if s > best_score:
+                best_score, best = s, c
+        assigned[region] = best
+        usage[best] += 1
+
+    # Refinement: the last regions coloured had the least choice, so revisit
+    # every region with all the others fixed and keep any strictly better
+    # colour. A few sweeps settle it; the result is deterministic.
+    for _ in range(6):
+        changed = False
+        for region in order:
+            current = assigned[region]
+            cur_score = score_of(region, current)
+            best, best_score = current, cur_score
+            for c in colors:
+                if c == current:
+                    continue
+                s = score_of(region, c)
+                if s > best_score + 1e-9:
+                    best_score, best = s, c
+            if best != current:
+                assigned[region] = best
+                changed = True
+        if not changed:
+            break
 
     return assigned
 

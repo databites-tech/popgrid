@@ -1,5 +1,5 @@
 """
-popgrid — Population grid maps for any country.
+popgrid — Tiled grid maps for any country: land area, population and GDP.
 
 Every country rasterised into N equal-area square cells,
 coloured by administrative region.
@@ -19,7 +19,9 @@ from .data import (
     KNOWN_DISSOLVE,
     RECOMMENDED_SETTINGS,
     REGION_LABELS,
+    VARIABLES,
     bundled_countries,
+    gdp_quality,
     supported_countries,
 )
 from .exceptions import (
@@ -29,7 +31,7 @@ from .exceptions import (
     PopGridError,
 )
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 __author__ = "Josep Ferrer"
 __email__ = "rfeers@gmail.com"
 
@@ -39,7 +41,9 @@ __all__ = [
     "KNOWN_DISSOLVE",
     "RECOMMENDED_SETTINGS",
     "REGION_LABELS",
+    "VARIABLES",
     "bundled_countries",
+    "gdp_quality",
     "supported_countries",
     "PopGridError",
     "DataNotFoundError",

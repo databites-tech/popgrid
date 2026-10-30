@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "popgrid"
-version = "0.6.2"
+version = "0.7.0"
 description = "Tiled grid maps for Python — land area and population cartograms"
 readme = "README.md"
 license = "MIT"
