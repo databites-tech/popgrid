@@ -2,7 +2,7 @@
 
 All notable changes to popgrid are documented here.
 
-## [Unreleased]
+## [0.6.2] - 2026-10-30
 
 ### Fixed
 - **Southern Chile no longer drops into a "Detached territories" box on the
