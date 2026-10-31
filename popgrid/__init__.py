@@ -31,7 +31,7 @@ from .exceptions import (
     PopGridError,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 __author__ = "Josep Ferrer"
 __email__ = "rfeers@gmail.com"
 

@@ -2,6 +2,70 @@
 
 All notable changes to popgrid are documented here.
 
+## [0.7.1] - 2026-10-31
+
+Organic shapes: population and GDP maps follow the cartogram instead of
+growing regions as boxes.
+
+### Changed
+- **New default layout for population and GDP maps (`layout="outline"`).**
+  The rubber-sheet cartogram gets every region's share right but also shrinks
+  the landmass as a whole (Spain by GDP came back at half its size); 0.7.0
+  then grew each region to its count by "most connected empty cell first",
+  so up to 40% of a big region was drawn by that rule, as a box. Now the
+  deformed landmass is rescaled to exactly its block count, the deepest
+  blocks inside it are kept, and each region gets exactly its quota from a
+  balanced assignment on the signed distance to its deformed outline. A
+  region drawn too small grows by a uniform offset, one drawn too large
+  shrinks the same way, so borders run where the cartogram put them. The
+  assignment also penalises borders that do not exist, so walls such as the
+  Castillas around Madrid come out of it; repair then rejoins dashed walls,
+  keeps enclosed regions at their exact count, and reopens sea the
+  deformation closed between regions that only face each other across water
+  (the Oslofjord). Coastal specks smaller than four blocks are dropped.
+- **`engine="auto"` picks the better cartogram for the outline layout.** It
+  also switches to diffusion when the rubber sheet crumples shapes (median
+  perimeter²/area growth above 2.5, or the landmass shrunk below 30%):
+  Denmark's islands were being pulled into crescents. And when the rubber
+  sheet fails but diffusion fares even worse on areas (Egypt: the Nile valley
+  is a sliver of the density raster), it keeps the rubber sheet; the outline
+  layout corrects the areas exactly anyway. `layout="classic"` keeps the
+  0.7.0 rule.
+- **Same map in every run.** Ties in the border repair are broken by region
+  name, so a population or GDP map no longer depends on Python's per-process
+  string hashing (some maps, Spain's among them, came out slightly
+  different from one interpreter to the next).
+- Land maps and colours are unchanged. README images regenerated.
+
+### Added
+- `layout="classic"` on `PopGrid` (and `PopGrid.from_geodataframe`, and
+  `generate.py --layout classic`) reproduces 0.7.0 maps block for block.
+
+### Measured
+On the 24 curated countries plus every European country (50 in all), against
+0.7.0, by population / by GDP:
+
+| | 0.7.0 | 0.7.1 |
+|---|---|---|
+| Borders on straight runs of 6+ blocks | 20.7% / 24.1% | 11.7% / 13.2% |
+| Holes (blocks) | 0 / 71 | 0 / 0 |
+| Blocks off quota (sum) | 73 / 100 | 8 / 12 |
+| Region pieces stranded inside another region | 193 / 245 | 29 / 73 |
+| Borders that do not exist in reality | 126 / 153 | 54 / 96 |
+| Separate landmasses touching | 0 / 0 | 0 / 0 |
+
+On twelve countries with extreme concentrations (Colombia, Peru, Chile,
+Thailand, Egypt, Indonesia, India, Russia, Nigeria, UAE, Panama, Uruguay),
+blocks off quota fell from 88 to 0 by population and from 208 to 4 by GDP.
+At `n=500` and `n=2000` the gains hold (straight borders 21% → 10% at
+`n=2000`).
+
+A handful of countries gain one or two contacts that do not exist (Norway,
+Canada, Italy by GDP: Calabria and Campania across a one-block Basilicata);
+countries made of dozens of tiny units around one dominant city (North
+Macedonia, Turkey) keep a few blocks off quota where a wall region is too
+small to separate its neighbours.
+
 ## [0.7.0] - 2026-10-30
 
 Blocks can count money now, and islands stay off the mainland.

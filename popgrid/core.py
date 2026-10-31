@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 ENGINES = ("auto", "dougenik", "diffusion")
 COLOR_MODES = ("land", "layouts")
+LAYOUTS = ("outline", "classic")
 
 
 def _country_title(iso3: str, region_label: Optional[str] = None) -> str:
@@ -882,6 +883,7 @@ class AreaGrid:
         engine: str = "auto",
         exclude: Optional[list[str]] = None,
         color_mode: str = "land",
+        layout: Optional[str] = None,
     ) -> "AreaGrid":
         """
         Build an AreaGrid or PopGrid from any GeoDataFrame — no Natural Earth
@@ -957,6 +959,12 @@ class AreaGrid:
         instance._custom_gdf = gdf
         instance._custom_region_col = region_col
         instance._custom_weight_col = weight_col
+        if layout is not None:
+            if not hasattr(instance, "layout"):
+                raise ValueError("layout applies to PopGrid only")
+            if layout not in LAYOUTS:
+                raise ValueError(f"layout must be one of {LAYOUTS}; got {layout!r}")
+            instance.layout = layout
         return instance
 
     # ── Dunder ────────────────────────────────────────────────────────────────
@@ -1145,6 +1153,35 @@ def _separate_landmasses(
     return out
 
 
+def _area_error(gdf: gpd.GeoDataFrame, values: dict[str, float]) -> float:
+    """Mean |log(area share / target share)| over regions (0 = exact)."""
+    a = np.maximum(gdf.geometry.area.to_numpy(), 1e-9)
+    v = np.array([max(float(values.get(str(n), 0.0)), 1e-9) for n in gdf["region_name"]])
+    return float(np.mean(np.abs(np.log((a / a.sum()) / (v / v.sum())))))
+
+
+def _sheet_mangled(before: gpd.GeoDataFrame, after: gpd.GeoDataFrame) -> bool:
+    """
+    True when the rubber sheet crumpled the regions instead of resizing them.
+
+    Shape distortion per region is the growth of its perimeter² / area ratio.
+    Across the 24 curated countries plus Europe a sound sheet keeps the median
+    under 2 and the landmass at half its size or more; Denmark comes back at
+    4.6 and a fifth of its size.
+    """
+    try:
+        def comp(g):
+            return (g.length ** 2) / max(g.area, 1e-9)
+        ratios = [comp(b) / comp(a) for a, b in zip(before.geometry, after.geometry)
+                  if a is not None and b is not None and not a.is_empty and not b.is_empty]
+        if not ratios:
+            return False
+        size = float(after.geometry.area.sum() / max(before.geometry.area.sum(), 1e-9))
+        return float(np.median(ratios)) > 2.5 or size < 0.3
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _is_folded(geom) -> bool:
     """
     True when a deformed region polygon has collapsed on itself: ``make_valid``
@@ -1178,15 +1215,26 @@ class PopGrid(AreaGrid):
         What each block counts: ``"population"`` (default) or ``"gdp"``
         (PPP, 2024). For GDP, check :func:`popgrid.data.gdp_quality`: only
         countries marked ``"reported"`` have official regional figures.
+    layout:
+        ``"outline"`` (default): blocks follow the cartogram's deformed
+        outlines, every region at its exact quota. ``"classic"``: the 0.7.0
+        layout (rasterise, then grow regions to their counts), kept so maps
+        published with earlier versions can be reproduced block for block.
     dissolve_by, palette, cluster_distance_km, title, subtitle, data_source:
         Same as :class:`AreaGrid`.
     """
 
-    def __init__(self, country_iso3: str, n: int = 1000, *args, by: str = "population", **kwargs) -> None:
+    def __init__(
+        self, country_iso3: str, n: int = 1000, *args,
+        by: str = "population", layout: str = "outline", **kwargs,
+    ) -> None:
         if by not in VARIABLES:
             raise ValueError(f"by must be one of {tuple(VARIABLES)}; got {by!r}")
+        if layout not in LAYOUTS:
+            raise ValueError(f"layout must be one of {LAYOUTS}; got {layout!r}")
         super().__init__(country_iso3, n, *args, **kwargs)
         self.by = by
+        self.layout = layout
 
     def _deform(self, shaped: gpd.GeoDataFrame, sub_pops: dict[str, float]) -> gpd.GeoDataFrame:
         """
@@ -1211,12 +1259,31 @@ class PopGrid(AreaGrid):
         )
         if engine == "auto":
             folded = int(sum(_is_folded(g) for g in out.geometry))
+            outline = getattr(self, "layout", "classic") == "outline"
             if folded or not diag.get("converged", True) or diag.get("max_error", 1) > 2.0:
                 logger.info(
                     "%s: rubber-sheet cartogram failed (%d folded region(s), converged=%s, "
                     "max area error %.2f); using diffusion engine",
                     self.country_iso3, folded, diag.get("converged"), diag.get("max_error", 0),
                 )
+                diff = diffusion_cartogram(shaped, sub_pops)
+                if (outline and not folded and not _sheet_mangled(shaped, out)
+                        and _area_error(out, sub_pops) < _area_error(diff, sub_pops)):
+                    # Diffusion can fare even worse (Egypt: the Nile valley
+                    # is a sliver of the density raster, Luxor ends at 0%).
+                    # The outline layout corrects areas exactly, so keep the
+                    # engine whose areas are closer.
+                    logger.info("%s: diffusion fared worse; keeping the rubber sheet",
+                                self.country_iso3)
+                    return out
+                return diff
+            if outline and _sheet_mangled(shaped, out):
+                # The outline layout draws the deformed outlines faithfully,
+                # so a sheet that has crumpled the regions into crescents
+                # (Denmark: islands pulled into arcs, the landmass shrunk to
+                # a fifth) must not be used even when its areas converged.
+                logger.info("%s: rubber-sheet cartogram distorted the shapes; "
+                            "using diffusion engine", self.country_iso3)
                 return diffusion_cartogram(shaped, sub_pops)
         return out
 
@@ -1253,6 +1320,7 @@ class PopGrid(AreaGrid):
         from .cartogram import (
             dougenik_cartogram, scale_to_area, fit_quota,
             real_adjacency, enforce_topology, fill_gaps, repair_quotas,
+            assign_cells, fold_stray_pieces, open_water_gaps, join_dashes,
         )
 
         # ── 1. Load regions ────────────────────────────────────────────────
@@ -1410,6 +1478,8 @@ class PopGrid(AreaGrid):
         # deformed outline is rasterised; fit_quota trims back to exact counts.
         OVERSIZE = 1.18
         cell_frames: list[gpd.GeoDataFrame] = []
+        exact_frames: list[gpd.GeoDataFrame] = []  # already at quota (layout="outline")
+        radj_all = real_adjacency(self._regions_proj) if self.layout == "outline" else None
         meta: list[dict] = []
         mainland_id = raw_lms[0].id if raw_lms else None
         geo_bbox = None   # mainland bounds before deformation
@@ -1434,6 +1504,27 @@ class PopGrid(AreaGrid):
                 geo_bbox = tuple(regions_sub.total_bounds)
             c = regions_sub.geometry.union_all().centroid
             geo_centroids[lm.id] = (float(c.x), float(c.y))
+
+            if len(regions_sub) > 1 and self.layout == "outline":
+                # Multi-region landmass: deform, rescale to the exact block
+                # count (the rubber sheet shrinks the landmass as a whole),
+                # then hand out blocks along the deformed outlines with every
+                # region at its quota. See cartogram.assign_cells.
+                exact_area = lm_quota * cell_area
+                shaped = scale_to_area(regions_sub, exact_area)
+                sub_pops = {
+                    str(n): max(float(pop_weights.get(str(n), 1)), 1.0)
+                    for n in shaped["region_name"]
+                }
+                shaped = self._deform(shaped, sub_pops)
+                shaped = scale_to_area(shaped, exact_area)
+                if lm.id == mainland_id:
+                    def_bbox = tuple(shaped.total_bounds)
+                cells = assign_cells(shaped, quotas, self._cell_size, lm.id, real_adj=radj_all)
+                if not cells.empty:
+                    exact_frames.append(cells)
+                meta.append(entry)
+                continue
 
             target_area = lm_quota * cell_area * OVERSIZE
             shaped = scale_to_area(regions_sub, target_area)
@@ -1460,22 +1551,52 @@ class PopGrid(AreaGrid):
 
         # ── 6. Fit to exact per-region quotas, then enforce real borders ───
         logger.info("[6/6] Fitting quotas and enforcing real-border topology …")
-        if cell_frames:
+        if cell_frames or exact_frames:
+            frames = []
+            if cell_frames:
+                # Gap-free rasterisation (filled outline) feeds quota fitting and
+                # border enforcement; a final fill_gaps mops up the few seams that
+                # quota-trimming re-opens at internal region borders.
+                legacy = gpd.GeoDataFrame(
+                    pd.concat(cell_frames, ignore_index=True), crs=cell_frames[0].crs
+                )
+                frames.append(fit_quota(legacy, quotas, self._cell_size))
+            if exact_frames:
+                exact = gpd.GeoDataFrame(
+                    pd.concat(exact_frames, ignore_index=True), crs=exact_frames[0].crs
+                )
+                frames.append(fold_stray_pieces(exact, self._cell_size, real_adj=radj_all))
             all_cells = gpd.GeoDataFrame(
-                pd.concat(cell_frames, ignore_index=True), crs=cell_frames[0].crs
+                pd.concat(frames, ignore_index=True), crs=frames[0].crs
             )
-            # Gap-free rasterisation (filled outline) feeds quota fitting and
-            # border enforcement; a final fill_gaps mops up the few seams that
-            # quota-trimming re-opens at internal region borders.
-            all_cells = fit_quota(all_cells, quotas, self._cell_size)
-            radj = real_adjacency(self._regions_proj)
-            all_cells = enforce_topology(all_cells, radj, quotas, self._cell_size)
+            radj = radj_all if radj_all is not None else real_adjacency(self._regions_proj)
+            all_cells = enforce_topology(
+                all_cells, radj, quotas, self._cell_size,
+                contiguous_rings=self.layout == "outline",
+            )
             all_cells = fill_gaps(all_cells, self._cell_size, quotas=quotas)
+            if exact_frames:
+                # After fill_gaps, which would otherwise close the channel again.
+                all_cells = open_water_gaps(all_cells, radj, self._cell_size)
             # The three steps above only adjust counts where a region touches
             # empty space; enclosed regions (La Rioja, Zug) keep whatever count
             # the layout gave them. Repair every region to its exact quota by
             # passing cells through chains of real neighbours (issue #3).
             all_cells = repair_quotas(all_cells, quotas, self._cell_size, radj)
+            if exact_frames:
+                # Border walls are sometimes planted as short dashes of the
+                # connector region. Fold every dash that is not holding two
+                # non-neighbours apart back into its neighbour, then restore
+                # the counts.
+                all_cells = join_dashes(all_cells, radj, self._cell_size)
+                all_cells = fold_stray_pieces(all_cells, self._cell_size, real_adj=radj)
+                all_cells = repair_quotas(all_cells, quotas, self._cell_size, radj)
+                # Exact counts win over the last walls: if a region is still
+                # off its quota because every block it could pass on holds two
+                # non-neighbours apart, let the repair move it anyway.
+                got = all_cells["region_name"].value_counts()
+                if any(int(got.get(r, 0)) != int(v) for r, v in quotas.items() if v > 0):
+                    all_cells = repair_quotas(all_cells, quotas, self._cell_size, None)
             # Re-anchor detached territories to the *deformed* mainland frame so
             # they keep their geographic bearing relative to the cartogram (this
             # is why an enclave like Melilla must not drift into a panel).

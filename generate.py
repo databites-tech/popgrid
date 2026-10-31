@@ -105,10 +105,11 @@ def style_from(args) -> dict:
 
 
 def _build(GridClass, iso, args):
+    extra = {"layout": args.layout} if GridClass is PopGrid else {}
     grid = GridClass(
         iso, n=args.n, cluster_distance_km=args.cluster,
         palette=resolve_palette(args.palette), dissolve_by=resolve_dissolve(args.dissolve),
-        engine=args.engine, exclude=args.exclude,
+        engine=args.engine, exclude=args.exclude, **extra,
     )
     grid.build()
     return grid
@@ -122,6 +123,7 @@ def _build_from_gdf(GridClass, gdf, args):
     )
     if GridClass is PopGrid:
         kwargs["weight_col"] = args.weight_col
+        kwargs["layout"] = args.layout
     grid = GridClass.from_geodataframe(**kwargs)
     grid.build()
     return grid
@@ -493,6 +495,9 @@ def main() -> int:
     p.add_argument("--exclude", nargs="+", default=None, metavar="REGION",
                    help="Region names to drop before building (they take no blocks). "
                         "Adds to the country's built-in exclusions.")
+    p.add_argument("--layout", default="outline", choices=["outline", "classic"],
+                   help="Population/GDP block layout: 'outline' (default, follows the "
+                        "cartogram's outlines) or 'classic' (the 0.7.0 layout).")
     p.add_argument("--engine", default="auto", choices=["auto", "dougenik", "diffusion"],
                    help="Cartogram engine for population maps: auto (rubber-sheet, "
                         "diffusion when it tears), dougenik, or diffusion (Gastner-Newman).")
@@ -612,7 +617,7 @@ def main() -> int:
                     grid = AreaGrid(iso, **kwargs)
                 else:
                     by = "gdp" if args.mode == "gdp" else "population"
-                    grid = PopGrid(iso, by=by, **kwargs)
+                    grid = PopGrid(iso, by=by, layout=args.layout, **kwargs)
                     if by == "gdp" and gdp_quality(iso) != "reported":
                         print(f"  {iso}: note: regional GDP is a model estimate here "
                               "(no official regional accounts); it closely follows population.")
