@@ -9,7 +9,7 @@
 popgrid turns a country (or any set of regions) into a block cartogram where **every block is an equal share of the whole**: 0.1% of the national land area, or 0.1% of the population. Same regions, same colours, two ways of seeing them. Where land and people diverge is the whole point.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_compare.png" width="100%" alt="Land area vs population of Spain, side by side">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_compare.png?v=0.7.1" width="100%" alt="Land area vs population of Spain, side by side">
 </p>
 
 Madrid is a sliver of land and a giant of population. The empty interior shrinks; the coasts and the capital swell. A block on the left is the same size as a block on the right, so the comparison is literally true.
@@ -40,7 +40,7 @@ AreaGrid("ESP").plot().savefig("spain_area.png", dpi=170, bbox_inches="tight")
 
 | Population | Land area |
 |---|---|
-| ![Population of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_pop.png) | ![Land area of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_area.png) |
+| ![Population of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_pop.png?v=0.7.1) | ![Land area of Spain](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_area.png?v=0.7.1) |
 
 `.plot()` builds the grid on first call and returns a Matplotlib figure, so you can save, show, or restyle it however you like.
 
@@ -62,7 +62,7 @@ for g in (AreaGrid("ESP", color_mode="layouts"),
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_land_people_gdp.png" width="100%" alt="Spain by land, population and GDP">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_land_people_gdp.png?v=0.7.1" width="100%" alt="Spain by land, population and GDP">
 </p>
 
 Madrid is 1.6% of the land, 14% of the people and 22% of the money. Regional GDP comes from the [Kummu et al. gridded GDP dataset](https://doi.org/10.5281/zenodo.16741980), which carries **official regional accounts for 89 countries**. Elsewhere it spreads the national GDP across regions with a model that closely follows population, so a GDP map of such a country mostly repeats its population map. Check before you publish:
@@ -105,7 +105,7 @@ Barcelona's 10 districts, built entirely from a custom GeoDataFrame. Eixample, t
 
 | Land area | Population |
 |---|---|
-| ![Land area of Barcelona](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/barcelona_area.png) | ![Population of Barcelona](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/barcelona_population.png) |
+| ![Land area of Barcelona](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/barcelona_area.png?v=0.7.1) | ![Population of Barcelona](https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/barcelona_population.png?v=0.7.1) |
 
 A full runnable version is in [`examples/barcelona.py`](examples/barcelona.py), using the district boundaries in [`examples/data/barcelona_districts.geojson`](examples/data/barcelona_districts.geojson).
 
@@ -127,7 +127,7 @@ ax2.set_title("Population")
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_subplots.png" width="100%" alt="Spain drawn into two matplotlib subplots">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/img/spain_subplots.png?v=0.7.1" width="100%" alt="Spain drawn into two matplotlib subplots">
 </p>
 
 `draw` returns the Axes, sets its aspect to equal and turns the axis off. It draws the main landmass and nearby islands; distant territories (Canary Islands, Hawaii, overseas France) need their own Axes, which is what `plot()` arranges for you.

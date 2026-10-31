@@ -227,5 +227,6 @@ benchmarks/
 .venv/
 out/
 notebook.ipynb
-examples/readme_images.ipynb
-examples/readme_images.ipynb
+
+# Local helper that rebuilds the README images
+readme_images.ipynb
