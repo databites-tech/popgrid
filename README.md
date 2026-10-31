@@ -187,7 +187,7 @@ python generate.py ALL --mode pop
 python generate.py WORLD --mode compare --out world/
 ```
 
-Useful flags: `--n` (target block count, default 1000), `--mainland` (drop detached territories), `--no-panels` (keep nearby islands inline, drop distant panels), `--palette`, `--dissolve`, `--label-mode auto|full|short|none`, `--label-size`, `--edge-color`, `--edge-width`, `--grid-color`, `--bg`, `--background grid|solid|none`, `--title`, `--subtitle`, `--source`, `--dpi`, `--out`. Run `python generate.py --help` for the full list.
+Useful flags: `--n` (target block count, default 1000), `--layout classic` (the 0.7.0 block layout, to reproduce older maps), `--mainland` (drop detached territories), `--no-panels` (keep nearby islands inline, drop distant panels), `--palette`, `--dissolve`, `--label-mode auto|full|short|none`, `--label-size`, `--edge-color`, `--edge-width`, `--grid-color`, `--bg`, `--background grid|solid|none`, `--title`, `--subtitle`, `--source`, `--dpi`, `--out`. Run `python generate.py --help` for the full list.
 
 ---
 
@@ -258,9 +258,10 @@ For sub-national data such as cities, or to use your own population numbers, use
 
 1. Load admin-1 regions, project to an equal-area CRS, and choose a cell size so the country tiles into roughly `n` blocks (default 1000, so one block ≈ 0.1%).
 2. Allocate an integer block quota per region using the Hamilton (largest-remainder) method, weighted by area or population.
-3. For population maps, deform each landmass with a contiguous-area cartogram so a region's area tracks its population, then rasterise the deformed shapes onto the grid. Dense regions bulge, sparse regions pinch, relative position and silhouette are preserved. Two engines: a rubber-sheet cartogram (Dougenik et al.) by default, and a diffusion cartogram (Gastner-Newman) that `engine="auto"` switches to when the sheet would tear, which happens for countries with an empty interior such as China or Canada. Pass `engine="diffusion"` to use it everywhere.
-4. Fit each region to its exact quota and enforce the real border graph, so no two regions touch on the grid unless they touch in reality. Detached landmasses are then placed relative to the deformed mainland and pushed clear of it if the deformation moved blocks over them.
-5. Assign colours once per country from the geographic border graph, so the same region keeps the same colour across the land, population and GDP maps. By default regions are weighted by land area and only direct neighbours are kept apart; `color_mode="layouts"` also weights by the largest share of people or GDP and keeps regions two borders apart distinct.
+3. For population and GDP maps, deform each landmass with a contiguous-area cartogram so a region's area tracks its value. Dense regions bulge, sparse regions pinch, relative position and silhouette are preserved. Two engines: a rubber-sheet cartogram (Dougenik et al.) by default, and a diffusion cartogram (Gastner-Newman) that `engine="auto"` switches to when the sheet would tear, which happens for countries with an empty interior such as China or Canada. Pass `engine="diffusion"` to use it everywhere.
+4. Hand out the blocks along the deformed outlines (`layout="outline"`, the default). The deformed landmass is rescaled to exactly its block count, the blocks deepest inside it are kept, and each region gets exactly its quota by a balanced assignment on the signed distance to its deformed outline: a region the cartogram drew too small grows by a uniform offset, one drawn too large shrinks the same way, so borders follow the cartogram instead of turning into straight lines. The assignment also discourages borders that do not exist in reality, so walls (the Castillas around Madrid) come out of it; a repair pass then enforces the real border graph, rejoins dashed walls, keeps enclosed regions at their exact count and reopens sea that the deformation closed between regions that only face each other across water. `layout="classic"` keeps the 0.7.0 pipeline (rasterise, then grow regions to their counts) to reproduce maps made with earlier versions.
+5. Place detached landmasses relative to the deformed mainland and push them clear of it if the deformation moved blocks over them, so Northern Ireland never ends up inside Great Britain.
+6. Assign colours once per country from the geographic border graph, so the same region keeps the same colour across the land, population and GDP maps. By default regions are weighted by land area and only direct neighbours are kept apart; `color_mode="layouts"` also weights by the largest share of people or GDP and keeps regions two borders apart distinct.
 
 ---
 
@@ -268,7 +269,8 @@ For sub-national data such as cities, or to use your own population numbers, use
 
 - **Population currency.** Bundled population figures are a fixed snapshot, not live data. For up-to-date or custom numbers, pass your own values through `PopGrid.from_geodataframe(..., weight_col=...)`.
 - **Disputed borders.** Natural Earth draws them its own way (Kashmir, Crimea, Western Sahara). Check before publishing a map of a contested region.
-- **Exact counts.** Population maps draw every region at its exact quota (`grid.quotas` vs `grid.block_counts`). The rare exception is a region that is the only barrier between two regions that are not neighbours; it may keep a block or two extra so the map never shows a border that does not exist. Land-area maps rasterise real geography and can be a few blocks off `n`.
+- **Exact counts.** Population and GDP maps draw every region at its exact quota (`grid.quotas` vs `grid.block_counts`). When a wall region is too small to keep two non-neighbours apart, the count wins and the two may touch along a short stretch; countries with dozens of tiny units next to one dominant city (North Macedonia, Hungary or Turkey by GDP) show a few such contacts at `n=1000`, fewer at `n=2000`. Land-area maps rasterise real geography and can be a few blocks off `n`.
+- **More blocks.** `n=2000` gives small regions more room (fewer one-block regions, fewer forced contacts) at roughly twice the build time; the layout itself does not depend on `n`.
 
 ---
 
