@@ -284,6 +284,12 @@ Blocks don't have to be people. Any number that adds up across regions works.
 
 **Companies in the German commercial register, by state**, by [Julius Maneth](https://www.linkedin.com/in/juliusmaneth/) at [business.watch](https://www.business.watch). Every block is 0.1% of 2.35 million active firms. Hamburg and Berlin swell far beyond their land.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/showcase_barcelona_barris.png" width="60%" alt="Population of Barcelona by its 73 neighbourhoods, coloured by district">
+</p>
+
+**Population of Barcelona by neighbourhood**, by [Ricard Ferrer](https://www.linkedin.com/in/ricardoferrerm/) ([post](https://lnkd.in/p/ec2FwgeN)). All 73 barris at 2,000 blocks, each block 865 residents (0.05% of the city), coloured by district. Data: Barcelona's municipal register, 1 January 2026.
+
 Built something with popgrid? Share it in [Show and tell](https://github.com/databites-tech/popgrid/discussions/categories/show-and-tell) and it may end up here.
 
 
