@@ -176,3 +176,37 @@ def test_same_map_in_every_python_process():
                              capture_output=True, text=True, check=True)
         out.add(res.stdout.strip().splitlines()[-1])
     assert len(out) == 1
+
+
+# ── Filling seams never invents a border (issue #11) ─────────────────────────
+
+def _seam_cells():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    # An enclosed one-cell seam at (1, 1). Its majority neighbour is A, but A
+    # and B do not border each other in reality; C borders both.
+    cells = [(0, 1, "A"), (1, 2, "A"), (2, 1, "B"), (1, 0, "C")]
+    return gpd.GeoDataFrame(
+        {"cx": [c[0] for c in cells], "cy": [c[1] for c in cells],
+         "region_name": [c[2] for c in cells], "region_id": [ord(c[2]) for c in cells],
+         "landmass_id": [0] * len(cells)},
+        geometry=[Point(c[0], c[1]) for c in cells], crs="EPSG:3857",
+    )
+
+
+def _touching(cells):
+    own = {(int(x), int(y)): r for x, y, r in zip(cells["cx"], cells["cy"], cells["region_name"])}
+    return {tuple(sorted((r, own[(x + dx, y + dy)])))
+            for (x, y), r in own.items() for dx, dy in ((1, 0), (0, 1))
+            if own.get((x + dx, y + dy), r) != r}
+
+
+def test_fill_gaps_avoids_borders_that_do_not_exist():
+    from popgrid.cartogram import fill_gaps
+
+    adj = {"A": {"C"}, "B": {"C"}, "C": {"A", "B"}}
+    plain = fill_gaps(_seam_cells(), 1.0)
+    honest = fill_gaps(_seam_cells(), 1.0, real_adj=adj)
+    assert ("A", "B") in _touching(plain)
+    assert ("A", "B") not in _touching(honest)

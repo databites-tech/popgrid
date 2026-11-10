@@ -1247,10 +1247,16 @@ def fill_gaps(
     quotas: dict | None = None,
     min_neighbours: int = 3,
     passes: int = 12,
+    real_adj: dict[str, set] | None = None,
 ) -> gpd.GeoDataFrame:
     """
     Close empty cells that sit *inside* the filled area — the seams left
     between adjacent deformed region polygons and any enclosed holes.
+
+    With ``real_adj``, a cell whose majority region would create a border that
+    does not exist in reality goes to the most common neighbour that creates
+    none (issue #11). When every neighbour would, it keeps the majority:
+    leaving the cell empty would open a hole instead.
 
     An empty lattice cell is filled (assigned to the majority region among its
     occupied 4-neighbours) when it is clearly interior: either it has at least
@@ -1348,8 +1354,20 @@ def fill_gaps(
                     continue  # leave large voids unfilled (China)
                 for k in pocket:
                     occ_nb = [occ[d] for d in nbrs(k) if d in occ]
-                    if occ_nb:
-                        to_fill[k] = Counter(occ_nb).most_common(1)[0][0]
+                    if not occ_nb:
+                        continue
+                    best = Counter(occ_nb).most_common(1)[0][0]
+
+                    def honest(r, occ_nb=occ_nb):
+                        return r not in real_adj or all(
+                            o == r or o not in real_adj or o in real_adj[r] for o in occ_nb)
+
+                    if real_adj and not honest(best):
+                        ranked = sorted(Counter(occ_nb).items(), key=lambda rv: (-rv[1], rv[0]))
+                        ok = [r for r, _ in ranked if honest(r)]
+                        to_fill[k] = ok[0] if ok else best
+                    else:
+                        to_fill[k] = best
             if not to_fill:
                 break
             occ.update(to_fill)

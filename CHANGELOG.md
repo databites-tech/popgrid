@@ -34,6 +34,16 @@ All notable changes to popgrid are documented here.
   (Hokkaido) or sharing an island with others stay where they are. Over all
   countries this changes custom-data maps of the USA and Norway (Svalbard)
   and the built-in map of French Polynesia; every other map is unchanged.
+- **Fewer borders that do not exist on population and GDP maps (#11).**
+  Closing the seams between deformed regions filled each gap with its most
+  common neighbour, even when that put two non-neighbours in contact: Baja
+  California Sur touched Sonora across the Gulf of California. Seams now go
+  to the most common neighbour that creates no false border, and keep the old
+  choice only when every neighbour would. Over 131 maps (curated countries,
+  Europe and a stress set, population and GDP) false contacts drop from 221
+  to 216 with no other metric worse: Mexico, Switzerland and the Dominican
+  Republic improve. The contacts left in Colombia, Peru and the Dominican
+  Republic need wider walls between regions and are still open.
 
 ## [0.7.1] - 2026-10-31
 
