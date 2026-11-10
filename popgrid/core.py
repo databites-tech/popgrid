@@ -1601,7 +1601,8 @@ class PopGrid(AreaGrid):
                 all_cells, radj, quotas, self._cell_size,
                 contiguous_rings=self.layout == "outline",
             )
-            all_cells = fill_gaps(all_cells, self._cell_size, quotas=quotas)
+            all_cells = fill_gaps(all_cells, self._cell_size, quotas=quotas,
+                                  real_adj=radj if exact_frames else None)
             if exact_frames:
                 # After fill_gaps, which would otherwise close the channel again.
                 all_cells = open_water_gaps(all_cells, radj, self._cell_size)
