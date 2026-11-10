@@ -322,3 +322,37 @@ def test_every_region_with_blocks_is_drawn(iso):
         assert hits > 0, f"{iso}: {region} has {n} blocks but none drawn"
         assert n - hits <= 4, f"{iso}: {region} has {n} blocks but only {hits} drawn"
     plt.close(fig)
+
+
+# ── A region off the main landmass is drawn in one place (issue #14) ─────────
+
+def _lm(lm_id, cells):
+    import pandas as pd
+
+    return {"id": lm_id, "cells": pd.DataFrame(cells, columns=["cx", "cy", "region_name"])}
+
+
+def _square(x0, y0, size, region):
+    return [(x0 + i, y0 + j, region) for i in range(size) for j in range(size)]
+
+
+def test_far_region_is_not_split_between_map_and_panel():
+    from popgrid.render import _classify_secondary
+
+    main = _lm(0, _square(0, 0, 40, "Main"))
+    far_piece = _lm(1, _square(-15, 41, 8, "Alaska"))     # bbox overlaps, 8 cells away
+    islet = _lm(2, [(-200, 60, "Alaska")])                 # far islet, goes to a panel
+    inline, panel = _classify_secondary(main, [far_piece, islet], cell_size=1.0)
+    assert [lm["id"] for lm in inline] == []
+    assert sorted(lm["id"] for lm in panel) == [1, 2]
+
+
+def test_region_next_to_the_main_landmass_stays_on_the_map():
+    from popgrid.render import _classify_secondary
+
+    main = _lm(0, _square(0, 0, 40, "Main"))
+    near_piece = _lm(1, _square(10, 42, 8, "Hokkaido"))   # 2 cells away
+    islet = _lm(2, [(10, 200, "Hokkaido")])
+    inline, panel = _classify_secondary(main, [near_piece, islet], cell_size=1.0)
+    assert [lm["id"] for lm in inline] == [1]
+    assert [lm["id"] for lm in panel] == [2]

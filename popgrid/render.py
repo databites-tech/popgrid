@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 # 5 cells ≈ 112 km for Spain, enough to include Ceuta & Melilla inline.
 INLINE_MARGIN_CELLS: int = 20
 
+# A region split between the main map and a panel moves wholly to the panel
+# when its main-map pieces are islands lying more than this many cells from
+# the main landmass (Alaska: 9 cells; Hokkaido, which stays: 3).
+DETACHED_GAP_CELLS: int = 5
+
 
 # ── Colour palettes ───────────────────────────────────────────────────────────
 
@@ -997,6 +1002,37 @@ def _classify_secondary(
         else:
             panel.append(lm)
             logger.debug("Landmass %d (%s) → panel inset", lm["id"], lm_names)
+
+    # A region off the main landmass is drawn in one place (issue #14). When
+    # some of its pieces passed the bbox test only because the bbox is coarse
+    # (Alaska's panhandle reaches towards Washington) and they are islands of
+    # their own lying more than DETACHED_GAP_CELLS from the main landmass,
+    # they join the region's panel. Pieces on a landmass shared with other
+    # regions, or close to the main landmass (Hokkaido), stay where they are.
+    in_panel = set()
+    for lm in panel:
+        in_panel |= set(lm["cells"]["region_name"].dropna())
+    split = in_panel - main_region_names
+    if split and inline:
+        main_xy = np.column_stack([main_cells["cx"].to_numpy(), main_cells["cy"].to_numpy()])
+        anchored: set[str] = set()
+        for lm in inline:
+            names = set(lm["cells"]["region_name"].dropna()) & split
+            if not names:
+                continue
+            xy = np.column_stack([lm["cells"]["cx"].to_numpy(), lm["cells"]["cy"].to_numpy()])
+            gap = np.sqrt(((xy[:, None, :] - main_xy[None, :, :]) ** 2).sum(-1)).min()
+            if len(set(lm["cells"]["region_name"].dropna())) > 1 or gap <= DETACHED_GAP_CELLS * cell_size:
+                anchored |= names
+        movable = split - anchored
+        keep: list[dict] = []
+        for lm in inline:
+            if set(lm["cells"]["region_name"].dropna()) <= movable:
+                panel.append(lm)
+                logger.debug("Landmass %d → panel (rest of its region is there)", lm["id"])
+            else:
+                keep.append(lm)
+        inline = keep
 
     return inline, panel
 
