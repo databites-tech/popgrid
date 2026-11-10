@@ -120,3 +120,50 @@ def test_dissolve_empty_column_falls_back_gracefully():
     gdf_raw = load_country_regions("DEU")
     gdf_dissolve = load_country_regions("DEU", dissolve_by="region")
     assert len(gdf_raw) == len(gdf_dissolve)
+
+
+# ── Rotated Natural Earth names (issue #10) ───────────────────────────────────
+
+from popgrid.data import _rotation_fixes, admin1_name_fixes
+
+
+def test_rotation_swap_is_fixed():
+    fixes = _rotation_fixes(["Napo", "Tungurahua", "Pichincha"],
+                            ["Provincia del Tungurahua", "Provincia de Napo", "Pichincha"])
+    assert fixes == {"Napo": "Tungurahua", "Tungurahua": "Napo"}
+
+
+def test_rotation_closed_by_elimination():
+    # The last link is a translated name that matches no polygon.
+    names = ["Semenawi Keyih Bahri", "Anseba", "Maekel", "Debub", "Gash Barka"]
+    gn = ["Anseba Region", "Maekel Region", "Debub Region",
+          "Northern Red Sea Region", "Gash-Barka Region"]
+    assert _rotation_fixes(names, gn) == {
+        "Semenawi Keyih Bahri": "Anseba", "Anseba": "Maekel",
+        "Maekel": "Debub", "Debub": "Semenawi Keyih Bahri",
+    }
+
+
+def test_city_pointing_to_its_district_is_not_a_rotation():
+    names = ["Francistown", "North-East", "Selebi-Phikwe", "Sowa", "Central"]
+    gn = ["North East District", "North East District", "Central District",
+          "Central District", "Central District"]
+    assert _rotation_fixes(names, gn) == {}
+
+
+def test_single_name_coincidence_is_not_a_rotation():
+    # Bermuda: the city's GeoNames name is also the name of another parish.
+    assert _rotation_fixes(["City of Hamilton", "Hamilton", "Pembroke"],
+                           ["Hamilton", "Hamilton Parish", "Pembroke Parish"]) == {}
+
+
+def test_bundled_countries_with_rotated_names():
+    fixed = {iso for iso in ("ECU", "GUY", "ERI", "BMU", "ESP", "DEU", "BWA", "TWN")
+             if admin1_name_fixes(iso)}
+    assert fixed == {"ECU", "GUY", "ERI"}
+
+
+def test_ecuador_napo_is_the_large_eastern_province():
+    gdf = load_country_regions("ECU").to_crs(6933)
+    area = gdf.set_index("region_name").geometry.area / 1e6
+    assert area["Napo"] > 10_000 > area["Tungurahua"]
