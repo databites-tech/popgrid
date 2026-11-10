@@ -22,6 +22,8 @@ from .data import (
     VARIABLES,
     bundled_countries,
     gdp_quality,
+    match_region_names,
+    region_aliases,
     supported_countries,
 )
 from .exceptions import (
@@ -44,6 +46,8 @@ __all__ = [
     "VARIABLES",
     "bundled_countries",
     "gdp_quality",
+    "match_region_names",
+    "region_aliases",
     "supported_countries",
     "PopGridError",
     "DataNotFoundError",

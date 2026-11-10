@@ -31,6 +31,8 @@ from .data import (
     admin1_parent_map,
     RECOMMENDED_SETTINGS,
     REGION_LABELS,
+    _match_names,
+    region_aliases,
 )
 from .geometry import detect_landmasses, project_regions
 from .grid import cell_size_for_n, generate_cells
@@ -456,14 +458,37 @@ class AreaGrid:
                 names, adjacency, self.palette, sizes=sizes
             )
         if self.color_overrides:
-            unknown = sorted(set(self.color_overrides) - set(self._color_map))
+            to_region = self._resolve_names(self.color_overrides, names)
+            overrides = {to_region[k]: v for k, v in self.color_overrides.items()}
+            unknown = sorted(set(overrides) - set(self._color_map))
             if unknown:
                 logger.warning(
                     "color_map names not found among regions (ignored): %s", unknown
                 )
             self._color_map.update(
-                {k: v for k, v in self.color_overrides.items() if k in self._color_map}
+                {k: v for k, v in overrides.items() if k in self._color_map}
             )
+
+    def _resolve_names(self, wanted, canonical) -> dict[str, str]:
+        """
+        ``{name: region_name}`` for names a user passed (``color_map``,
+        ``exclude``, ``labels``). Official, ISO 3166-2 or English names
+        resolve to the region popgrid draws (issue #17); exact names and
+        names with no match map to themselves.
+        """
+        canonical = list(canonical)
+        known = set(canonical)
+        if all(w in known for w in wanted):
+            return {w: w for w in wanted}
+        aliases = region_aliases(self.country_iso3) if self._custom_gdf is None else {}
+        found = _match_names(list(wanted), canonical, aliases)
+        return {w: (c if c is not None else w) for w, c in found.items()}
+
+    def _resolve_labels(self, labels):
+        if not labels or self._regions_proj is None:
+            return labels
+        to_region = self._resolve_names(labels, self._regions_proj["region_name"].tolist())
+        return {to_region[k]: v for k, v in labels.items()}
 
     def build(self) -> "AreaGrid":
         """
@@ -726,7 +751,7 @@ class AreaGrid:
             data_source=data_source if data_source is not None else self.data_source,
             style=style,
             label_mode=label_mode,
-            labels=labels,
+            labels=self._resolve_labels(labels),
             panel_regions=self._panel_regions(),
             display_names=self._display_names(),
         )
@@ -743,6 +768,8 @@ class AreaGrid:
         if not excluded:
             return regions
         names = regions["region_name"].astype(str)
+        to_region = self._resolve_names(excluded, names.tolist())
+        excluded = {to_region[n] for n in excluded}
         hit = names.isin(excluded)
         missing = sorted(excluded - set(names))
         if missing:
@@ -831,7 +858,7 @@ class AreaGrid:
             show_region_borders=show_region_borders,
             style=style,
             label_mode=label_mode,
-            labels=labels,
+            labels=self._resolve_labels(labels),
             panel_regions=self._panel_regions(),
             display_names=self._display_names(),
         )

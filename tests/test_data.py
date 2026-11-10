@@ -167,3 +167,40 @@ def test_ecuador_napo_is_the_large_eastern_province():
     gdf = load_country_regions("ECU").to_crs(6933)
     area = gdf.set_index("region_name").geometry.area / 1e6
     assert area["Napo"] > 10_000 > area["Tungurahua"]
+
+
+# ── Other names for the same region (issue #17) ───────────────────────────────
+
+from popgrid.data import _match_names, match_region_names, region_aliases
+
+
+def test_current_names_find_superseded_regions():
+    assert match_region_names("MEX", ["Ciudad de México"]) == {"Ciudad de México": "Distrito Federal"}
+    assert match_region_names("VEN", ["La Guaira"]) == {"La Guaira": "Vargas"}
+    assert match_region_names("NIC", ["Costa Caribe Norte", "Costa Caribe Sur"]) == {
+        "Costa Caribe Norte": "Atlántico Norte", "Costa Caribe Sur": "Atlántico Sur"}
+
+
+def test_matching_ignores_accents_case_and_generic_words():
+    out = _match_names(["nuevo leon", "Province of Napo", "Unknownia"],
+                       ["Nuevo León", "Napo"], {})
+    assert out == {"nuevo leon": "Nuevo León", "Province of Napo": "Napo", "Unknownia": None}
+
+
+def test_ambiguous_names_are_not_guessed():
+    assert _match_names(["Central"], ["Central Region", "Central District"], {}) == {"Central": None}
+
+
+def test_alias_never_shadows_another_region_name():
+    aliases = region_aliases("ECU")
+    assert aliases.get("Napo") in (None, "Napo")
+    assert aliases.get("Tungurahua") in (None, "Tungurahua")
+
+
+def test_exclude_and_color_map_accept_official_names():
+    from popgrid import AreaGrid
+
+    ag = AreaGrid("MEX", exclude=["Ciudad de México"], color_map={"Nuevo Leon": "#ff0000"})
+    ag.build()
+    assert "Distrito Federal" not in ag.block_counts
+    assert ag.color_map["Nuevo León"] == "#ff0000"
