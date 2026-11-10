@@ -2,7 +2,7 @@
 
 All notable changes to popgrid are documented here.
 
-## [Unreleased]
+## [0.7.2] - 2026-11-10
 
 ### Added
 - **Official region names resolve to the bundled ones (#17).**
