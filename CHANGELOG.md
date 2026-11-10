@@ -24,6 +24,16 @@ All notable changes to popgrid are documented here.
   It is a general rule, not a country list: over all 207 countries it fires
   on these three only. Every polygon keeps its population and GDP; only the
   labels move. Thanks to @jp1309 for the report and the Guyana mapping.
+- **A region off the main map is drawn in one place (#14).** Whether a
+  detached landmass sits on the main map or in a panel was decided piece by
+  piece, so with custom data Alaska was drawn twice: the mainland on the
+  main map (its panhandle passes the closeness test) and the Aleutians in an
+  "Alaska" panel. Now, when a region is split that way and all its main-map
+  pieces are islands of their own more than 5 cells from the main landmass,
+  the whole region goes to its panel. Regions next to the main landmass
+  (Hokkaido) or sharing an island with others stay where they are. Over all
+  countries this changes custom-data maps of the USA and Norway (Svalbard)
+  and the built-in map of French Polynesia; every other map is unchanged.
 
 ## [0.7.1] - 2026-10-31
 
