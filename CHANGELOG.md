@@ -2,6 +2,18 @@
 
 All notable changes to popgrid are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Rotated region names in Ecuador, Guyana and Eritrea (#10).** Natural
+  Earth attaches some admin-1 names to the wrong polygon: Napo and Tungurahua
+  are swapped, 8 of Guyana's 10 regions and 4 of Eritrea's 6 are rotated.
+  The GeoNames name on the same rows is right, so popgrid now relabels any
+  set of polygons whose GeoNames names close a cycle over each other's names.
+  It is a general rule, not a country list: over all 207 countries it fires
+  on these three only. Every polygon keeps its population and GDP; only the
+  labels move. Thanks to @jp1309 for the report and the Guyana mapping.
+
 ## [0.7.1] - 2026-10-31
 
 Organic shapes: population and GDP maps follow the cartogram instead of

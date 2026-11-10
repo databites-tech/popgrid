@@ -259,6 +259,110 @@ def admin1_parent_map(country_iso3: str, parent_col: str = "region") -> dict[str
     return out
 
 
+# ── Rotated admin-1 names ─────────────────────────────────────────────────────
+# In a few countries Natural Earth attaches each `name` to a neighbouring
+# polygon (Ecuador swaps Napo and Tungurahua; issue #10), while the GeoNames
+# name (`gn_name`) on the same row is right. A rotation shows up as a closed
+# cycle: every polygon's GeoNames name is the Natural Earth name of another
+# polygon of the same country. Cities that point to their surrounding district
+# (Francistown, Hsinchu City) never close a cycle and are left alone.
+
+_NAME_NOISE = (
+    "region", "province", "provincia", "state", "estado", "department",
+    "departamento", "district", "county", "governorate", "division",
+    "municipality", "de", "del", "la", "el", "of", "the",
+)
+
+
+def _name_key(name) -> str:
+    """Comparable form of a region name: ASCII, lower case, no generic words."""
+    import re
+    import unicodedata
+
+    if not isinstance(name, str):
+        return ""
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    words = re.sub(r"[^a-z0-9]+", " ", s).split()
+    return " ".join(w for w in words if w not in _NAME_NOISE)
+
+
+def _rotation_fixes(names: list, gn_names: list) -> dict[str, str]:
+    """
+    ``{wrong_name: right_name}`` for the polygons of one country whose names
+    are rotated among themselves; empty when there is no rotation.
+
+    Each polygon whose GeoNames name is another polygon's name points to that
+    name. Pointers that form a closed cycle are a rotation. A chain is closed
+    by elimination when its last polygon's GeoNames name matches no polygon
+    (a translated name: "Northern Red Sea" for Semenawi Keyih Bahri) and the
+    chain's first name is claimed by no one, so that name is the only one left
+    for it. Elimination needs at least two confirmed links: a single one can be
+    a coincidence (Bermuda's City of Hamilton is "Hamilton" in GeoNames, which
+    is also the name of Hamilton Parish).
+    """
+    pairs = [(str(n).strip(), g) for n, g in zip(names, gn_names)
+             if isinstance(n, str) and n.strip()]
+    owners: dict[str, list[str]] = {}
+    for n, _ in pairs:
+        owners.setdefault(_name_key(n), []).append(n)
+    gn_of = dict(pairs)
+
+    points_to: dict[str, str] = {}
+    for n, g in pairs:
+        key = _name_key(g)
+        if not key or key == _name_key(n):
+            continue
+        others = [o for o in owners.get(key, []) if o != n]
+        if len(others) == 1:
+            points_to[n] = others[0]
+
+    claimed = list(points_to.values())
+    fixes: dict[str, str] = {}
+    for start in sorted(points_to):
+        if start in fixes:
+            continue
+        chain, cur = [start], points_to[start]
+        while cur in points_to and cur not in chain:
+            chain.append(cur)
+            cur = points_to[cur]
+        if cur == start:
+            cycle = chain
+        elif cur not in points_to and start not in claimed and len(chain) >= 2:
+            end_key = _name_key(gn_of.get(cur))
+            if not end_key or end_key == _name_key(cur) or end_key in owners:
+                continue
+            cycle = chain + [cur]
+            points_to = {**points_to, cur: start}
+        else:
+            continue
+        targets = [points_to[c] for c in cycle]
+        if len(cycle) > 1 and len(set(targets)) == len(cycle):
+            fixes.update({c: points_to[c] for c in cycle})
+    return fixes
+
+
+_FIXES_CACHE: dict[str, dict[str, str]] = {}
+
+
+def admin1_name_fixes(country_iso3: str) -> dict[str, str]:
+    """
+    ``{natural_earth_name: correct_name}`` for a country whose Natural Earth
+    admin-1 names are rotated between polygons (see :func:`_rotation_fixes`).
+    Empty for every other country. Applied by :func:`load_country_regions`
+    and to the GHS-POP and GDP tables, which are keyed by Natural Earth names.
+    """
+    iso = country_iso3.strip().upper()
+    if iso not in _FIXES_CACHE:
+        table = gpd.read_file(_download_admin1(), ignore_geometry=True)
+        for code, rows in table.groupby("adm0_a3"):
+            if "gn_name" in rows.columns:
+                fixes = _rotation_fixes(rows["name"].tolist(), rows["gn_name"].tolist())
+            else:
+                fixes = {}
+            _FIXES_CACHE[str(code).strip().upper()] = fixes
+    return _FIXES_CACHE.get(iso, {})
+
+
 def load_country_regions(
     country_iso3: str,
     dissolve_by: Optional[str] = None,
@@ -370,6 +474,10 @@ def load_country_regions(
 
     # ── Standard path ─────────────────────────────────────────────────────────
     regions = regions.rename(columns={"name": "region_name"})
+    fixes = admin1_name_fixes(iso)
+    if fixes:
+        regions["region_name"] = regions["region_name"].map(lambda n: fixes.get(n, n))
+        logger.info("%s: relabelled %d rotated admin-1 names", iso, len(fixes))
     # Natural Earth has a handful of nameless islets (a few km² each, e.g. one
     # off Russia, one off Mexico). They have no population row and would only
     # ever get a fallback weight, so they are dropped.
@@ -431,6 +539,18 @@ def _read_population_rows(
     return out
 
 
+def _ne_keyed(values: dict[str, int], iso3: str, name_to_parent=None) -> dict[str, int]:
+    """
+    Rename the rows of a table keyed by raw Natural Earth names (GHS-POP, GDP)
+    to the corrected names :func:`load_country_regions` returns. Dissolved
+    countries map raw names to parents instead, so they are left as they are.
+    """
+    fixes = {} if name_to_parent else admin1_name_fixes(iso3)
+    if not fixes:
+        return values
+    return {fixes.get(k, k): v for k, v in values.items()}
+
+
 def _table_iso3s(csv_path: Path, min_regions: int = 1) -> list[str]:
     import csv as _csv
     from collections import Counter
@@ -487,7 +607,7 @@ def load_region_populations(
     dict mapping region_name → integer population estimate.
     """
     country_pops = _read_population_rows(_CURATED_CSV, iso3)
-    ghs_pops = _read_population_rows(_GHS_CSV, iso3)
+    ghs_pops = _ne_keyed(_read_population_rows(_GHS_CSV, iso3), iso3, name_to_parent)
     if not country_pops:
         country_pops = ghs_pops
         if country_pops:
@@ -556,7 +676,7 @@ def load_region_gdp(
     Check :func:`gdp_quality` before presenting a GDP map: only countries
     marked ``"reported"`` have official regional GDP behind them.
     """
-    gdp = _read_population_rows(_GDP_CSV, iso3, value_col="gdp")
+    gdp = _ne_keyed(_read_population_rows(_GDP_CSV, iso3, value_col="gdp"), iso3, name_to_parent)
     if not gdp:
         raise DataNotFoundError(f"No GDP data for {iso3!r} in {_GDP_CSV.name}.")
     if name_to_parent:
