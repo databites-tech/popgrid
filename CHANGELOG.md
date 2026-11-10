@@ -4,6 +4,17 @@ All notable changes to popgrid are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Official region names resolve to the bundled ones (#17).**
+  `match_region_names(iso3, names)` maps names from official statistics,
+  ISO 3166-2 or English sources to the names popgrid uses (Ciudad de México
+  to Distrito Federal, La Guaira to Vargas, Costa Caribe Norte to Atlántico
+  Norte), ignoring accents, case and generic words such as "Province".
+  Aliases come from ISO 3166-2 and Natural Earth's own alternative names;
+  an alias shared by two regions is left out, never guessed.
+  `region_aliases(iso3)` shows the table. `color_map`, `exclude` and
+  `labels` accept the same names. Map labels are unchanged.
+
 ### Fixed
 - **Rotated region names in Ecuador, Guyana and Eritrea (#10).** Natural
   Earth attaches some admin-1 names to the wrong polygon: Napo and Tungurahua

@@ -109,6 +109,24 @@ Barcelona's 10 districts, built entirely from a custom GeoDataFrame. Eixample, t
 
 A full runnable version is in [`examples/barcelona.py`](examples/barcelona.py), using the district boundaries in [`examples/data/barcelona_districts.geojson`](examples/data/barcelona_districts.geojson).
 
+### Joining official statistics by name
+
+The bundled boundaries use Natural Earth names, which sometimes differ from official ones (Mexico's `Distrito Federal` is now Ciudad de México). `match_region_names` maps names from your table to the names popgrid uses, ignoring accents, case and words like "Province". Names with no unambiguous match come back as `None`.
+
+```python
+import pandas as pd
+from popgrid import PopGrid, match_region_names
+from popgrid.data import load_country_regions
+
+df = pd.read_csv("mexico_states.csv")  # your table, with "state" and "population" columns
+regions = load_country_regions("MEX")
+df["region_name"] = df["state"].map(match_region_names("MEX", df["state"]))
+gdf = regions.merge(df, on="region_name")
+PopGrid.from_geodataframe(gdf, region_col="region_name", weight_col="population").plot()
+```
+
+`color_map`, `exclude` and `labels` accept the same official names.
+
 ---
 
 ## Use with matplotlib

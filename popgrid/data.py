@@ -342,6 +342,14 @@ def _rotation_fixes(names: list, gn_names: list) -> dict[str, str]:
 
 
 _FIXES_CACHE: dict[str, dict[str, str]] = {}
+_TABLE_CACHE: list = []
+
+
+def _admin1_table():
+    """Natural Earth admin-1 attributes without geometry, read once per session."""
+    if not _TABLE_CACHE:
+        _TABLE_CACHE.append(gpd.read_file(_download_admin1(), ignore_geometry=True))
+    return _TABLE_CACHE[0]
 
 
 def admin1_name_fixes(country_iso3: str) -> dict[str, str]:
@@ -353,7 +361,7 @@ def admin1_name_fixes(country_iso3: str) -> dict[str, str]:
     """
     iso = country_iso3.strip().upper()
     if iso not in _FIXES_CACHE:
-        table = gpd.read_file(_download_admin1(), ignore_geometry=True)
+        table = _admin1_table()
         for code, rows in table.groupby("adm0_a3"):
             if "gn_name" in rows.columns:
                 fixes = _rotation_fixes(rows["name"].tolist(), rows["gn_name"].tolist())
@@ -361,6 +369,129 @@ def admin1_name_fixes(country_iso3: str) -> dict[str, str]:
                 fixes = {}
             _FIXES_CACHE[str(code).strip().upper()] = fixes
     return _FIXES_CACHE.get(iso, {})
+
+
+# ── Other names for the same region (issue #17) ───────────────────────────────
+# Natural Earth keeps some superseded names (Distrito Federal, now Ciudad de
+# México). Official statistics, ISO 3166-2 and English sources use others.
+# Aliases let those names find the region popgrid draws; labels are unchanged.
+
+_ALIAS_CACHE: dict[str, dict[str, str]] = {}
+_ALIAS_COLUMNS = ("gn_name", "woe_name", "name_en", "name_local")
+
+
+def _iso_subdivision_names(iso: str, codes: list) -> dict[str, str]:
+    """
+    ``{natural_earth_code: current ISO 3166-2 name}`` for top-level
+    subdivisions. A retired code (Mexico City's MX-DIF, now MX-CMX) is matched
+    to the one ISO subdivision no polygon claims, when it is the only one left
+    on each side.
+    """
+    try:
+        import pycountry
+
+        country = pycountry.countries.get(alpha_3=iso)
+        subs = pycountry.subdivisions.get(country_code=country.alpha_2) if country else None
+    except Exception:  # noqa: BLE001 - aliases are a convenience, never a failure
+        return {}
+    top = {s.code: s.name for s in (subs or []) if s.parent_code is None}
+    codes = [c for c in codes if isinstance(c, str) and c]
+    out = {c: top[c] for c in codes if c in top}
+    unknown = sorted({c for c in codes if c not in top})
+    free = sorted(set(top) - set(out))
+    if len(unknown) == 1 and len(free) == 1:
+        out[unknown[0]] = top[free[0]]
+    return out
+
+
+def region_aliases(country_iso3: str) -> dict[str, str]:
+    """
+    ``{other_name: region_name}`` for a built-in country: current ISO 3166-2
+    names, GeoNames, English and local names, and Natural Earth's alternates,
+    each pointing to the region name popgrid uses. An alias shared by two
+    regions, or equal to another region's name, is left out rather than
+    guessed. Empty for countries drawn at a dissolved level (Spain's CCAA).
+    """
+    iso = country_iso3.strip().upper()
+    if iso in _ALIAS_CACHE:
+        return dict(_ALIAS_CACHE[iso])
+    out: dict[str, str] = {}
+    if not RECOMMENDED_SETTINGS.get(iso, {}).get("dissolve_by"):
+        table = _admin1_table()
+        rows = table[(table["adm0_a3"] == iso) & table["name"].notna()]
+        fixes = admin1_name_fixes(iso)
+        codes = rows["iso_3166_2"].tolist() if "iso_3166_2" in rows.columns else []
+        iso_names = _iso_subdivision_names(iso, codes)
+        canon_keys: dict[str, str] = {}
+        claims: dict[str, set] = {}
+        text: dict[str, str] = {}
+        for _, r in rows.iterrows():
+            raw = str(r["name"]).strip()
+            if not raw:
+                continue
+            canon = fixes.get(raw, raw)
+            canon_keys[_name_key(canon)] = canon
+            cands = [r.get(c) for c in _ALIAS_COLUMNS if c in rows.columns]
+            cands += str(r.get("name_alt") or "").split("|")
+            cands.append(iso_names.get(r.get("iso_3166_2")))
+            for c in cands:
+                if not isinstance(c, str) or not c.strip():
+                    continue
+                key = _name_key(c)
+                if key:
+                    claims.setdefault(key, set()).add(canon)
+                    text.setdefault(key, c.strip())
+        for key in sorted(claims):
+            owners = claims[key]
+            if len(owners) != 1:
+                continue
+            canon = next(iter(owners))
+            if canon_keys.get(key, canon) != canon or key == _name_key(canon):
+                continue
+            out[text[key]] = canon
+    _ALIAS_CACHE[iso] = out
+    return dict(out)
+
+
+def _match_names(wanted: list, canonical: list, aliases: dict[str, str]) -> dict:
+    """
+    ``{wanted_name: region_name or None}``. Exact names pass through; then
+    names equal after ignoring accents, case and generic words ("Province of",
+    "Region"); then aliases. Ambiguous or unknown names give ``None``.
+    """
+    names = set(canonical)
+    by_key: dict[str, set] = {}
+    for c in canonical:
+        by_key.setdefault(_name_key(c), set()).add(c)
+    alias_key = {_name_key(a): c for a, c in aliases.items() if c in names}
+    out = {}
+    for w in wanted:
+        if w in names:
+            out[w] = w
+            continue
+        key = _name_key(w)
+        hits = by_key.get(key, set()) if key else set()
+        if len(hits) == 1:
+            out[w] = next(iter(hits))
+        else:
+            out[w] = alias_key.get(key) if key and not hits else None
+    return out
+
+
+def match_region_names(country_iso3: str, names) -> dict:
+    """
+    Map region names from another source (official statistics, ISO 3166-2,
+    English) to the names popgrid uses for a built-in country, so data can be
+    joined by name::
+
+        match_region_names("MEX", ["Ciudad de México", "Nuevo León"])
+        # {'Ciudad de México': 'Distrito Federal', 'Nuevo León': 'Nuevo León'}
+
+    Accents, case and generic words such as "Province" are ignored. A name
+    with no unambiguous match maps to ``None``.
+    """
+    regions = load_country_regions(country_iso3, dissolve_by="auto")
+    return _match_names(list(names), regions["region_name"].tolist(), region_aliases(country_iso3))
 
 
 def load_country_regions(
