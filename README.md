@@ -14,6 +14,10 @@ popgrid turns a country (or any set of regions) into a block cartogram where **e
 
 Madrid is a sliver of land and a giant of population. The empty interior shrinks; the coasts and the capital swell. A block on the left is the same size as a block on the right, so the comparison is literally true.
 
+**[Try it in your browser at popgrid.databites.tech](https://popgrid.databites.tech/)**: every country, switching between land, population and GDP, no install needed.
+
+Built and maintained by [Josep Ferrer](https://databites.tech/gh), freelance data scientist. Need maps like these built on your own data? [See how to work with me](#need-a-map-like-this-for-your-own-data).
+
 ---
 
 ## Install
@@ -297,6 +301,12 @@ For sub-national data such as cities, or to use your own population numbers, use
 Blocks don't have to be people. Any number that adds up across regions works.
 
 <p align="center">
+  <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/spain_land_vs_tourists.gif" width="70%" alt="Animation: Spain by land area turning into Spain by international tourists">
+</p>
+
+**Spain by land area, then by international tourists**, by [Josep Ferrer](https://www.linkedin.com/in/iamjosepferrer) ([post](https://lnkd.in/p/eiqqbnwC)). The same blocks move from land to the 96.7 million international tourists of 2025: the Balearic and Canary Islands are 2.5% of the territory and 32.5% of the tourists. Data: INE FRONTUR 2025.
+
+<p align="center">
   <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/showcase_germany_companies.png" width="70%" alt="German states by area vs active companies in the commercial register">
 </p>
 
@@ -308,7 +318,15 @@ Blocks don't have to be people. Any number that adds up across regions works.
 
 **Population of Barcelona by neighbourhood**, by [Ricard Ferrer](https://www.linkedin.com/in/ricardoferrerm/) ([post](https://lnkd.in/p/ec2FwgeN)). All 73 barris at 2,000 blocks, each block 865 residents (0.05% of the city), coloured by district. Data: Barcelona's municipal register, 1 January 2026.
 
-Built something with popgrid? Share it in [Show and tell](https://github.com/databites-tech/popgrid/discussions/categories/show-and-tell) and it may end up here.
+Built something with popgrid? Share it in [Show and tell](https://github.com/databites-tech/popgrid/discussions/categories/show-and-tell) and it may end up here. When you publish a map, a credit line such as *Made with popgrid by databites.tech* is appreciated.
+
+---
+
+## Need a map like this for your own data?
+
+popgrid is built and maintained by [Josep Ferrer](https://databites.tech/gh), a freelance data scientist based in Rotterdam. I build maps, atlases and data stories for public bodies, research groups and companies: popgrid-style cartograms of your own regions or indicators, interactive maps for a report or a website, or a tool your team can keep using.
+
+**[Tell me what you need](https://databites.tech/gh)** and I reply within 2 business days. More of my work is in the [portfolio](https://databites.tech/projects), and new maps go out on [LinkedIn](https://www.linkedin.com/in/iamjosepferrer), [X](https://x.com/iamjosepferrer) and the [databites newsletter](https://reads.databites.tech).
 
 
 ---
@@ -325,6 +343,6 @@ Built something with popgrid? Share it in [Show and tell](https://github.com/dat
 
 ## License & credits
 
-MIT licensed. Built by [Josep Ferrer](https://github.com/rfeers) at **[databites.tech](https://databites.tech)**, data and AI, clearly explained through diagrams.
+MIT licensed. Built by [Josep Ferrer](https://github.com/iamjosepferrer) at **[databites.tech](https://databites.tech)**. For custom maps and data projects, see [databites.tech/work-with-me](https://databites.tech/gh).
 
 The block-cartogram format is inspired by the "Population of X, Visualised" maps popularised by [@Civixplorer](https://twitter.com/Civixplorer).

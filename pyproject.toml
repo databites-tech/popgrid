@@ -40,6 +40,8 @@ arcgis = ["arcgis>=2.4,<2.5", "pyshp==2.3.1"]
 [project.urls]
 Homepage = "https://databites.tech"
 Repository = "https://github.com/databites-tech/popgrid"
+Explorer = "https://popgrid.databites.tech"
+"Custom maps" = "https://databites.tech/work-with-me?utm_source=pypi&utm_medium=project-links"
 Issues = "https://github.com/databites-tech/popgrid/issues"
 
 [tool.setuptools.packages.find]
