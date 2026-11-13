@@ -304,7 +304,7 @@ Blocks don't have to be people. Any number that adds up across regions works.
   <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/spain_land_vs_tourists.gif" width="70%" alt="Animation: Spain by land area turning into Spain by international tourists">
 </p>
 
-**Spain by land area, then by international tourists**, by [Josep Ferrer](https://www.linkedin.com/in/iamjosepferrer) ([post](https://lnkd.in/p/eiqqbnwC)). The same blocks move from land to the 96.7 million international tourists of 2025: the Balearic and Canary Islands are 2.5% of the territory and 32.5% of the tourists. Data: INE FRONTUR 2025.
+**Spain by land area, then by international tourists**, by [Álvaro Ponte Blanco](https://www.linkedin.com/in/alvaro-ponte-blanco-113794140/) ([post](https://lnkd.in/p/eiqqbnwC)). The same blocks move from land to the 96.7 million international tourists of 2025: the Balearic and Canary Islands are 2.5% of the territory and 32.5% of the tourists. Data: INE FRONTUR 2025.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/databites-tech/popgrid/main/docs/user_examples/showcase_germany_companies.png" width="70%" alt="German states by area vs active companies in the commercial register">
