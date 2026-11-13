@@ -324,9 +324,11 @@ Built something with popgrid? Share it in [Show and tell](https://github.com/dat
 
 ## Need a map like this for your own data?
 
-popgrid is built and maintained by [Josep Ferrer](https://databites.tech/gh), a freelance data scientist based in Rotterdam. I build maps, atlases and data stories for public bodies, research groups and companies: popgrid-style cartograms of your own regions or indicators, interactive maps for a report or a website, or a tool your team can keep using.
+I'm [Josep Ferrer](https://databites.tech/gh), a freelance data scientist in Rotterdam, and I build and maintain popgrid. I also make maps and data stories for public bodies, research groups and companies, like the [Catalonia Income Atlas](https://catalonia-atlas.databites.tech/) or [Five ways to hear New York](https://five-ways-nyc.databites.tech/).
 
-**[Tell me what you need](https://databites.tech/gh)** and I reply within 2 business days. More of my work is in the [portfolio](https://databites.tech/projects), and new maps go out on [LinkedIn](https://www.linkedin.com/in/iamjosepferrer), [X](https://x.com/iamjosepferrer) and the [databites newsletter](https://reads.databites.tech).
+If you want popgrid-style maps of your own regions or indicators, or an interactive map for a report or website, **[tell me what you need](https://databites.tech/gh)**. I reply within 2 business days.
+
+More work in the [portfolio](https://databites.tech/projects). New maps every weekday on [LinkedIn](https://www.linkedin.com/in/iamjosepferrer), [X](https://x.com/iamjosepferrer) and the [databites newsletter](https://reads.databites.tech).
 
 
 ---
