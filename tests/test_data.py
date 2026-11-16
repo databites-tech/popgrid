@@ -204,3 +204,34 @@ def test_exclude_and_color_map_accept_official_names():
     ag.build()
     assert "Distrito Federal" not in ag.block_counts
     assert ag.color_map["Nuevo León"] == "#ff0000"
+
+
+# ── Empty parent regions (Saga and Nagasaki in Japan) ─────────────────────────
+
+from popgrid.data import admin1_parent_map, _read_population_rows, _CURATED_CSV
+
+
+def test_japan_dissolve_keeps_every_prefecture():
+    parents = admin1_parent_map("JPN")
+    assert parents["Saga"] == "Kyushu"
+    assert parents["Nagasaki"] == "Kyushu"
+    regions = load_country_regions("JPN", dissolve_by="region")
+    assert sorted(regions["region_name"]) == [
+        "Chubu", "Chugoku", "Hokkaido", "Kanto", "Kinki",
+        "Kyushu", "Okinawa", "Shikoku", "Tohoku",
+    ]
+
+
+def test_sparse_parent_field_is_not_filled_by_neighbours():
+    # In Korea 16 of 17 rows have no 'region': the field is not a hierarchy,
+    # so nothing spreads from the one row that has it.
+    parents = admin1_parent_map("KOR")
+    assert parents["Seoul"] == "Seoul"
+    assert parents["Busan"] == "Busan"
+
+
+def test_philippine_regions_add_up_to_the_census():
+    rows = _read_population_rows(_CURATED_CSV, "PHL")
+    # PSA 2020: 109,035,343 including 2,098 Filipinos in missions abroad.
+    assert sum(rows.values()) == 109_035_343 - 2_098
+    assert rows["Dinagat Islands (Region XIII)"] == 2_804_788   # all of Caraga
