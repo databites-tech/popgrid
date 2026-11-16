@@ -2,7 +2,7 @@
 
 All notable changes to popgrid are documented here.
 
-## [Unreleased]
+## [0.7.3] - 2026-11-16
 
 ### Fixed
 - **Japan: Saga and Nagasaki were missing.** Natural Earth leaves the
