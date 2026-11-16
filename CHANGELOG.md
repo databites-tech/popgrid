@@ -28,6 +28,10 @@ All notable changes to popgrid are documented here.
   that already has a label in its blocks (Oki for Chugoku, Okushiri for
   Hokkaido) got a second, leader-line label. It is now skipped. Regions
   whose every piece is small keep their leader-line label.
+- **Empty parent regions read as "nan" with pandas 3.** `admin1_parent_map`
+  turned a missing parent into the text "nan" instead of the unit's own
+  name, which broke the test suite on Python 3.11 and 3.12. No built-in map
+  was affected.
 
 ### Changed
 - **Philippines: short region names on the map** (Metro Manila, Caraga,
