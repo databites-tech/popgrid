@@ -2,6 +2,42 @@
 
 All notable changes to popgrid are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Japan: Saga and Nagasaki were missing.** Natural Earth leaves the
+  `region` field empty for these two prefectures, so the dissolve dropped
+  their land and their 2.1M people. An admin-1 unit with an empty parent now
+  joins its neighbours' parent when every neighbour that has one agrees on
+  it. The rule only applies when at most one unit in ten is empty, so
+  countries where the field is mostly blank (Korea, Laos, Croatia) are left
+  alone. Among the countries dissolved by default it changes Japan only:
+  Kyushu goes from 93 to 106 land blocks and from 86 to 101 population blocks.
+- **Philippines: Caraga had the population of one province.** Natural Earth
+  names the Caraga region "Dinagat Islands (Region XIII)" and
+  `population.csv` carried Dinagat Islands province alone (127,904). It now
+  holds the region (2,804,788, PSA Census 2020): Caraga goes from 1 block to
+  26 and Metro Manila from 127 to 124. BARMM also had two digits swapped
+  (4,404,228, now 4,404,288). The regions add up to the census total.
+- **Japan: Tokyo used a rounded figure** (13,960,000). It is now the 2020
+  census count, 14,047,594.
+- **Abbreviated labels kept the opening bracket.** "Cagayan Valley
+  (Region II)" was shortened to "CV(I". Parenthesised qualifiers are now
+  dropped before abbreviating.
+- **A region was labelled twice on land maps.** A small islet of a region
+  that already has a label in its blocks (Oki for Chugoku, Okushiri for
+  Hokkaido) got a second, leader-line label. It is now skipped. Regions
+  whose every piece is small keep their leader-line label.
+
+### Changed
+- **Philippines: short region names on the map** (Metro Manila, Caraga,
+  BARMM, Central Luzon), set as `display_names`. Region names in the data
+  and in `block_counts` are unchanged.
+- **New Zealand: Tokelau and five uninhabited outlying island groups are
+  excluded by default** (Kermadec, Three Kings, Auckland, Campbell and
+  Antipodes Islands). The land map goes from 1,009 to 1,001 blocks; the
+  population map is unchanged.
+
 ## [0.7.2] - 2026-11-10
 
 ### Added

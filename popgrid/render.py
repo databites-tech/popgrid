@@ -614,10 +614,12 @@ def _abbreviate(name: str) -> str:
 
     Multi-word names become initials (``Castilla y León`` → ``CL``,
     ``New South Wales`` → ``NSW``); single words keep their first three
-    letters (``Madrid`` → ``MAD``).  Lower-case connectives are dropped.
+    letters (``Madrid`` → ``MAD``).  Lower-case connectives are dropped, and
+    so are parenthesised qualifiers: ``Bicol (Region V)`` → ``BIC``.
     """
     import re
 
+    name = re.sub(r"\s*\(.*?\)", "", name).strip() or name
     words = [w for w in re.split(r"[\s\-–/]+", name.strip()) if w]
     if not words:
         return name[:3].upper()
@@ -892,13 +894,15 @@ def _label_small_inline(
     style: Optional[dict] = None,
     labels: Optional[dict[str, str]] = None,
     display_names: Optional[dict[str, str]] = None,
+    skip: Optional[set] = None,
 ) -> None:
     """
     Add name annotations for inline regions that are too small to be
     labelled by the standard threshold (e.g. Ceuta, Melilla: 1 cell each).
 
     These get a small italic label placed just above the cell with a
-    pointing offset so it doesn't overlap the coloured square.
+    pointing offset so it doesn't overlap the coloured square. Regions in
+    ``skip`` already carry a label elsewhere on the map and get none here.
     """
     st = resolve_style(style)
     labels = labels or {}
@@ -907,8 +911,8 @@ def _label_small_inline(
     # as large as the smallest in-block label without crowding anything.
     fontsize = max(10.0, float(st["label_size"] or 0) * 0.9, float(st["label_min_size"]) * 1.5)
     for region_name, grp in cells_gdf.groupby("region_name"):
-        if len(grp) >= label_min_cells:
-            continue  # already handled by _plot_cells
+        if len(grp) >= label_min_cells or region_name in (skip or ()):
+            continue  # labelled in its blocks, here or elsewhere on the map
         name = str(region_name)
         text = labels.get(name, display_names.get(name, name))
         if not text:
@@ -1232,6 +1236,17 @@ def draw_map(
                 label_min_cells=label_min_cells, **common)
 
     inline_min = max(1, label_min_cells)
+    # Regions that get an in-block label somewhere on this map. A small islet
+    # of one of them (Oki for Chugoku) needs no leader-line label of its own.
+    labelled = {
+        name for name, n in main_cells["region_name"].value_counts().items()
+        if n >= label_min_cells
+    }
+    for lm in inline_lms:
+        labelled |= {
+            name for name, n in lm["cells"]["region_name"].value_counts().items()
+            if n >= inline_min
+        }
     for lm in inline_lms:
         _plot_cells(ax, lm["cells"], color_map, cell_size,
                     label_min_cells=inline_min, **common)
@@ -1240,6 +1255,7 @@ def draw_map(
             _label_small_inline(
                 ax, lm["cells"], color_map, cell_size, inline_min,
                 style=st, labels=labels, display_names=display_names,
+                skip=labelled,
             )
 
     if set_limits:

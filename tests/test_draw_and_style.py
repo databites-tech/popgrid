@@ -183,6 +183,8 @@ def test_from_geodataframe_accepts_color_map():
     ("Foral de Navarra", "FN"),
     ("Baden-Württemberg", "BW"),
     ("La Rioja", "RIO"),
+    ("Bicol (Region V)", "BIC"),
+    ("Cagayan Valley (Region II)", "CV"),
 ])
 def test_abbreviate(name, short):
     assert _abbreviate(name) == short
@@ -356,3 +358,16 @@ def test_region_next_to_the_main_landmass_stays_on_the_map():
     inline, panel = _classify_secondary(main, [near_piece, islet], cell_size=1.0)
     assert [lm["id"] for lm in inline] == [1]
     assert [lm["id"] for lm in panel] == [2]
+
+
+def test_islet_of_a_labelled_region_gets_no_second_label():
+    import geopandas as gpd
+    from popgrid.render import _label_small_inline
+
+    cells = gpd.GeoDataFrame({"region_name": ["Chugoku", "Okinawa"],
+                              "cx": [0.0, 5.0], "cy": [0.0, 5.0]})
+    fig, ax = plt.subplots()
+    _label_small_inline(ax, cells, {}, cell_size=1.0, label_min_cells=3,
+                        skip={"Chugoku"})
+    assert [t.get_text() for t in ax.texts] == ["Okinawa"]
+    plt.close(fig)

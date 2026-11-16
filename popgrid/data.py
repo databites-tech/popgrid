@@ -90,7 +90,27 @@ RECOMMENDED_SETTINGS: dict[str, dict] = {
                               "Islas Baleares": "Baleares"}},
     "ITA": {"dissolve_by": "region"},  # 110 province  → 20 regioni
     "FRA": {"dissolve_by": "region"},  # 101 depts     → 18 régions
-    "PHL": {"dissolve_by": "region"},  # 118 provinces → 17 regions
+    # Natural Earth names Caraga after one of its provinces, Dinagat Islands.
+    "PHL": {"dissolve_by": "region",   # 118 provinces → 17 regions
+            "display_names": {
+                "Autonomous Region in Muslim Mindanao (ARMM)": "BARMM",
+                "Bicol (Region V)": "Bicol",
+                "CALABARZON (Region IV-A)": "CALABARZON",
+                "Cagayan Valley (Region II)": "Cagayan Valley",
+                "Central Luzon (Region III)": "Central Luzon",
+                "Central Visayas (Region VII)": "Central Visayas",
+                "Cordillera Administrative Region (CAR)": "Cordillera",
+                "Davao (Region XI)": "Davao",
+                "Dinagat Islands (Region XIII)": "Caraga",
+                "Eastern Visayas (Region VIII)": "Eastern Visayas",
+                "Ilocos (Region I)": "Ilocos",
+                "MIMAROPA (Region IV-B)": "MIMAROPA",
+                "National Capital Region": "Metro Manila",
+                "Northern Mindanao (Region X)": "Northern Mindanao",
+                "SOCCSKSARGEN (Region XII)": "SOCCSKSARGEN",
+                "Western Visayas (Region VI)": "Western Visayas",
+                "Zamboanga Peninsula (Region IX)": "Zamboanga Peninsula",
+            }},
 
     # ── Already at the correct admin-1 level (no dissolve needed) ────────────
     "DEU": {"dissolve_by": None},   # 16 Bundesländer
@@ -117,6 +137,11 @@ RECOMMENDED_SETTINGS: dict[str, dict] = {
     "PRT": {"dissolve_by": None},   # 18 districts + 2 autonomous regions
     "CHE": {"dissolve_by": None},   # 26 cantons
     "BEL": {"dissolve_by": None},   # 11 provinces
+    # Tokelau is a dependent territory, not New Zealand proper; the rest are
+    # uninhabited outlying islands. The Chathams (about 800 people) stay.
+    "NZL": {"dissolve_by": None,    # 16 regions
+            "exclude": ["Tokelau", "Kermadec Islands", "Three Kings Islands",
+                        "Auckland Islands", "Campbell Islands", "Antipodes Islands"]},
 
     # ── Special cases ─────────────────────────────────────────────────────────
     # GBR: Natural Earth stores 232 UK districts. 'region' gives 16 English
@@ -227,6 +252,45 @@ def _download_admin1() -> Path:
     )
 
 
+# Natural Earth leaves the parent field empty for a few admin-1 units (Saga
+# and Nagasaki have no 'region' in Japan). Dropping them would lose their land
+# and people, so such a unit joins its neighbours' parent when every
+# neighbour that has a parent agrees on it, repeated until nothing changes
+# (Saga borders only Kyushu; Nagasaki then borders only Saga). Units with no
+# neighbours or with neighbours in different parents stay empty. The field is
+# only trusted as a hierarchy with gaps when the gaps are rare: if more than
+# one unit in ten is empty (Korea, Laos, Croatia), nothing is filled.
+_NEIGHBOUR_TOLERANCE_DEG = 0.01
+_MAX_EMPTY_PARENT_SHARE = 0.10
+
+
+def _fill_empty_parents(regions: gpd.GeoDataFrame, col: str) -> gpd.GeoDataFrame:
+    """Copy of ``regions`` with empty ``col`` values filled from neighbours."""
+    parent = regions[col].where(regions[col].notna(), "").astype(str).str.strip()
+    empty = [i for i in regions.index if not parent[i]]
+    if not empty or len(empty) > _MAX_EMPTY_PARENT_SHARE * len(regions):
+        return regions
+    geoms = shapely.buffer(shapely.make_valid(regions.geometry.values),
+                           _NEIGHBOUR_TOLERANCE_DEG)
+    pos = {idx: k for k, idx in enumerate(regions.index)}
+    changed = True
+    while changed and empty:
+        changed = False
+        for i in list(empty):
+            hits = shapely.intersects(geoms, geoms[pos[i]])
+            touching = [j for j in regions.index if hits[pos[j]] and j != i]
+            parents = {parent[j] for j in touching if parent[j]}
+            if len(parents) == 1:
+                parent[i] = parents.pop()
+                empty.remove(i)
+                changed = True
+                logger.info("%r has no '%s'; joins its neighbours in %r",
+                            regions.at[i, "name"], col, parent[i])
+    out = regions.copy()
+    out[col] = parent.where(parent != "", None)
+    return out
+
+
 # ── Core loader ───────────────────────────────────────────────────────────────
 
 
@@ -250,6 +314,7 @@ def admin1_parent_map(country_iso3: str, parent_col: str = "region") -> dict[str
     out: dict[str, str] = {}
     if regions.empty or "name" not in regions.columns or parent_col not in regions.columns:
         return out
+    regions = _fill_empty_parents(regions, parent_col)
     for _, r in regions.iterrows():
         name = str(r["name"]).strip() if r["name"] is not None else ""
         parent = r[parent_col]
@@ -566,6 +631,7 @@ def load_country_regions(
                 col, iso, sorted(regions.columns.tolist()),
             )
         else:
+            regions = _fill_empty_parents(regions, col)
             filled = regions[col].notna() & (regions[col].str.strip() != "")
             n_filled = filled.sum()
 
