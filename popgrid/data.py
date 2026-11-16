@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 import geopandas as gpd
+import pandas as pd
 import requests
 import shapely
 
@@ -316,9 +317,9 @@ def admin1_parent_map(country_iso3: str, parent_col: str = "region") -> dict[str
         return out
     regions = _fill_empty_parents(regions, parent_col)
     for _, r in regions.iterrows():
-        name = str(r["name"]).strip() if r["name"] is not None else ""
-        parent = r[parent_col]
-        parent = str(parent).strip() if parent is not None else ""
+        # Missing values read as None or NaN depending on the pandas version.
+        name = "" if pd.isna(r["name"]) else str(r["name"]).strip()
+        parent = "" if pd.isna(r[parent_col]) else str(r[parent_col]).strip()
         if name:
             out[name] = parent if parent else name
     return out
