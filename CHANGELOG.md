@@ -2,6 +2,22 @@
 
 All notable changes to popgrid are documented here.
 
+
+## [Unreleased]
+
+### Fixed
+- **South Africa used 2021 estimates labelled as Census 2022.**
+  `population.csv` now holds the published Census 2022 counts
+  (62,027,503 in total). Gauteng goes from 265 to 243 population blocks,
+  KwaZulu-Natal from 193 to 200 and Northern Cape from 21 to 22.
+
+### Changed
+- **Indonesia and Egypt get English labels.** Java's provinces show as
+  West, Central and East Java, and Jakarta Raya as Jakarta. Egypt's 27
+  governorates use their English names (Cairo, Giza, Alexandria, New
+  Valley) instead of transliterations, several of which shortened to the
+  same "AS".
+
 ## [0.7.3] - 2026-11-16
 
 ### Fixed
