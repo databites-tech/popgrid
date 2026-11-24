@@ -143,6 +143,24 @@ RECOMMENDED_SETTINGS: dict[str, dict] = {
     "NZL": {"dissolve_by": None,    # 16 regions
             "exclude": ["Tokelau", "Kermadec Islands", "Three Kings Islands",
                         "Auckland Islands", "Campbell Islands", "Antipodes Islands"]},
+    # Natural Earth still has 33 provinces (before the 2022 Papua split).
+    # Render with --cluster 800 so Papua stays on the main map.
+    "IDN": {"dissolve_by": None,    # 33 provinces
+            "display_names": {"Jawa Barat": "West Java", "Jawa Tengah": "Central Java",
+                              "Jawa Timur": "East Java", "Jakarta Raya": "Jakarta"}},
+    # Natural Earth uses Arabic transliterations; English names are what readers know.
+    "EGY": {"dissolve_by": None,    # 27 governorates
+            "display_names": {
+                "Al Qahirah": "Cairo", "Al Jizah": "Giza", "Al Iskandariyah": "Alexandria",
+                "Al Wadi at Jadid": "New Valley", "Al Bahr al Ahmar": "Red Sea",
+                "Matruh": "Matrouh", "Shamal Sina'": "North Sinai", "Janub Sina'": "South Sinai",
+                "Ash Sharqiyah": "Sharqia", "Ad Daqahliyah": "Dakahlia", "Al Buhayrah": "Beheira",
+                "Al Qalyubiyah": "Qalyubia", "Al Minya": "Minya", "Al Gharbiyah": "Gharbia",
+                "Suhaj": "Sohag", "Asyut": "Assiut", "Al Minufiyah": "Monufia", "Al Fayyum": "Faiyum",
+                "Kafr ash Shaykh": "Kafr el-Sheikh", "Bani Suwayf": "Beni Suef", "Dumyat": "Damietta",
+                "Al Isma`iliyah": "Ismailia", "As Suways": "Suez", "Bur Sa`id": "Port Said",
+                "Qina": "Qena",
+            }},
 
     # ── Special cases ─────────────────────────────────────────────────────────
     # GBR: Natural Earth stores 232 UK districts. 'region' gives 16 English
